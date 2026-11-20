@@ -95,7 +95,7 @@ class SearchEngine:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._cache_lock = threading.Lock()
-        self._cache: OrderedDict[tuple, list[dict]] = OrderedDict()
+        self._cache: OrderedDict[tuple, tuple[list[dict], int | None]] = OrderedDict()
         self._semaphore = asyncio.Semaphore(settings.encode_concurrency)
         self.vector_index = VectorIndex.load(settings.index_path, settings.ids_path)
         self.condition_detections, self.condition_detector_version = {}, None
@@ -165,14 +165,14 @@ class SearchEngine:
         async with self._semaphore:
             return await asyncio.to_thread(self._encode_text_sync, query)
 
-    def _cache_get(self, key: tuple) -> list[dict] | None:
+    def _cache_get(self, key: tuple) -> tuple[list[dict], int | None] | None:
         with self._cache_lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
                 return self._cache[key]
         return None
 
-    def _cache_put(self, key: tuple, value: list[dict]) -> None:
+    def _cache_put(self, key: tuple, value: tuple[list[dict], int | None]) -> None:
         with self._cache_lock:
             self._cache[key] = value
             self._cache.move_to_end(key)
@@ -200,23 +200,24 @@ class SearchEngine:
         weight = self.settings.search_region_weight
         version = index.version if index else None
         detector_version = self.condition_detector_version if conditions else None
-        actual_mode = 'clip_region' if mode == 'clip_region' and ((details and index) or (
-            conditions and (index or detector_version))) else 'clip'
+        actual_mode = 'clip_region' if mode == 'clip_region' and (conditions or (details and index)) else 'clip'
         key = ('demo', query, k, tuple(details), conditions, mode, version, detector_version,
                candidate_k, threshold, weight)
         cached = self._cache_get(key)
         if cached is not None:
-            return cached, 0, actual_mode, version
+            results, checked = cached
+            return results, 0, actual_mode, version, checked
         started = time.perf_counter()
+        checked = None
         if actual_mode == 'clip_region' and conditions:
-            baseline = self.vector_index.search_vector(await self.encode_text(query), max(k, candidate_k))
-            ranked = await asyncio.to_thread(
+            baseline = self.vector_index.search_vector(await self.encode_text(query), self.num_images)
+            ranked, checked = await asyncio.to_thread(
                 rank_checked_shortlist, index, baseline, details, conditions, candidate_k, threshold, weight,
-                self.condition_detections,
+                self.condition_detections, target_k=k,
             )
-            ranked = ranked[:k]
         elif actual_mode == 'clip_region':
             ranked = await self._retrieve_shortlist(index, query, k, details, candidate_k, threshold, weight)
+            checked = candidate_k
         else:
             ranked = self.vector_index.search_vector(await self.encode_text(query), k)
         results = []
@@ -226,8 +227,8 @@ class SearchEngine:
             results.append({**row, 'final_rank': rank, 'clip_rank': row.get('clip_rank', rank),
                             'region_evaluated': row.get('region_evaluated', False),
                             'matches': matches, 'conditions': checks})
-        self._cache_put(key, results)
-        return results, int((time.perf_counter() - started) * 1000), actual_mode, version
+        self._cache_put(key, (results, checked))
+        return results, int((time.perf_counter() - started) * 1000), actual_mode, version, checked
 
     async def search(self, query: str, k: int, detail_queries: list[str] | None = None) -> tuple[list[dict], int]:
         details = tuple(detail_queries or [])
@@ -235,7 +236,7 @@ class SearchEngine:
         key = (query, k, details, version)
         cached = self._cache_get(key)
         if cached is not None:
-            return cached, 0
+            return cached[0], 0
 
         t0 = time.perf_counter()
         if not details:
@@ -254,5 +255,5 @@ class SearchEngine:
             results = await asyncio.to_thread(regions.rank, detail_vectors, self._global_vectors, self.vector_index.ids, k, whole, list(details))
         took_ms = int((time.perf_counter() - t0) * 1000)
 
-        self._cache_put(key, results)
+        self._cache_put(key, (results, None))
         return results, took_ms

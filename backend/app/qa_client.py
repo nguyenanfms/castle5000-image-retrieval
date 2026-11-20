@@ -37,6 +37,11 @@ class QAInvalidOutputError(QAClientError):
         super().__init__("qa_invalid_output", message, 502)
 
 
+class QATruncatedOutputError(QAInvalidOutputError):
+    def __init__(self):
+        super().__init__("Gemini đã cắt phản hồi vì chạm giới hạn đầu ra (MAX_TOKENS).")
+
+
 class QATimeoutError(QAClientError):
     def __init__(self, message: str = "Hết thời gian chờ trả lời câu hỏi"):
         super().__init__("qa_timeout", message, 504)
@@ -380,7 +385,7 @@ class GeminiQAClient(BaseQAClient):
 
         parts: list[dict[str, Any]] = [{"text": prompt}]
         for item in evidence:
-            parts.append({"text": "Server image ID: " + item.image_id})
+            parts.append({"text": f"Server image ID: {item.image_id}; evidence ID: {item.evidence_id}; view: {item.kind}"})
             b64 = base64.b64encode(item.image_bytes).decode("ascii")
             parts.append(
                 {
@@ -423,7 +428,7 @@ class GeminiQAClient(BaseQAClient):
             finish_reason = candidate.get('finishReason')
             logger.info('gemini_output model=%s finish_reason=%s', self._model, finish_reason)
             if finish_reason == 'MAX_TOKENS':
-                raise QAInvalidOutputError('Gemini đã hết ngân sách token trước khi trả đủ JSON (MAX_TOKENS). Tăng QA_MAX_OUTPUT_TOKENS hoặc giảm nội dung đầu vào.')
+                raise QATruncatedOutputError()
             parts = candidate['content']['parts']
             raw_text = ''.join(p['text'] for p in parts if isinstance(p.get('text'), str) and not p.get('thought', False))
             if not raw_text.strip():

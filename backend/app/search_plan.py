@@ -10,7 +10,7 @@ import httpx
 from .schemas import SearchPlan
 
 
-PROMPT_VERSION = "castle-search-v10"
+PROMPT_VERSION = "castle-search-v11"
 VIETNAMESE_MARKS = frozenset("đơưảạấầẩẫậắằẳẵặẻẽẹếềểễệỉịỏọốồổỗộớờởỡợủụứừửữựỷỹỵ")
 STRIPE_DIRECTIONS = r"horizontal|vertical|diagonal"
 STRIPE_ORIENTATION = re.compile(rf"\b({STRIPE_DIRECTIONS})(?:ly)?\s+(?:stripes|striped)\b", re.I)
@@ -40,7 +40,8 @@ INSTRUCTIONS = (
     "the global caption. Keep the visible object state when stated, e.g. 'open cabinet door'. "
     "Keep relationships in the global caption. Use only people, objects, actions and "
     "attributes in the user's description. Do not infer associated objects or copy "
-    "objects from the examples. Never turn a negation into a positive detail. "
+    "objects from the examples. Never turn a negation into a positive detail. For an exclusion "
+    "with no stated setting, describe only what is excluded. Do not add a room or background. "
     "In conditions list up to five explicit requirements beyond positive objects. "
     "Use absent with a positive noun as subject for an explicitly excluded entity. "
     "For spatial relations use left_of, right_of, above, below or near, with the two "
@@ -53,13 +54,6 @@ INSTRUCTIONS = (
     "such as an event order or a disjunction. Omit target and count when they do not apply. "
     "Keep uncertainty in the caption and do not make a tentative detail a required condition."
 )
-
-NO_PEOPLE = re.compile(
-    r"(?:không (?:có )?(?:ai|người|người nào|một ai) trong (?:bức )?ảnh|"
-    r"there (?:is (?:nobody|no one)|are no people) in the (?:photo|image|picture)|"
-    r"(?:no people|no one|nobody) in the (?:photo|image|picture))[.!?]?", re.IGNORECASE,
-)
-
 
 class SearchPlanError(Exception):
     pass
@@ -99,11 +93,6 @@ class SearchPlanner:
         await self.client.aclose()
 
     async def plan(self, query, language):
-        if NO_PEOPLE.fullmatch(normalize("NFC", query).strip()):
-            # Ground a context-free exclusion in the Castle5000 scene so that
-            # calibration charts do not become the first results for an empty photo.
-            return SearchPlan(global_query_en="An empty kitchen. No people are visible.", detail_queries_en=[],
-                              conditions=[{"kind": "absent", "subject": "person"}])
         if not self.key or not self.model:
             raise SearchPlanError("Gemini chưa được cấu hình. Bạn có thể nhập mô tả tiếng Anh.")
         # Accented Vietnamese already identifies the language. Reuse the same

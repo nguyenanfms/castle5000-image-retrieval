@@ -117,27 +117,36 @@ def check_constraint(condition, regions, detections):
     return result
 
 
-def rank_checked_shortlist(index, baseline, details, conditions, candidate_k, threshold, weight, detections):
-    prefix = baseline[:candidate_k]
+def rank_checked_shortlist(index, baseline, details, conditions, candidate_k, threshold, weight, detections, *, target_k=None):
+    """Expand the checked prefix as needed. Return the ranking and the number of checked images."""
     terms = list(dict.fromkeys([*details, *(term for c in conditions if c.kind in SPATIAL_CONDITIONS
                                            for term in (c.subject, c.target))]))
-    matched = index.shortlist_matches(prefix, terms) if index and terms else {}
     checkable = len(details) + sum(c.kind not in {"action", "other"} for c in conditions)
     ranked = []
-    for rank, row in enumerate(prefix, 1):
-        owner = row["id"]
-        regions = {match["query"]: {**match, "source": "region", "model": "RegionCLIP-RN50",
-                                    "supported": match["score"] is not None and match["score"] >= threshold}
-                   for match in matched.get(owner, [])}
-        matches = [regions.get(term, {"query": term, "score": None, "source": "region", "supported": False})
-                   for term in details]
-        evidence = [*positive_checks(matches), *(check_constraint(c, regions, detections.get(owner)) for c in conditions)]
-        passed = sum(check["status"] == "met" for check in evidence)
-        violated = sum(check["status"] == "violated" for check in evidence)
-        score = 1 / (60 + rank) + weight * passed / (60 * max(1, checkable))
-        ranked.append((violated, {**row, "score": score, "clip_rank": rank, "matches": matches,
-                                   "conditions": evidence, "region_evaluated": True}))
+    examined = 0
+    batch_size = max(1, candidate_k)
+    budget = len(baseline) if target_k is not None else min(candidate_k, len(baseline))
+    while examined < budget:
+        batch = baseline[examined:min(examined + batch_size, budget)]
+        matched = index.shortlist_matches(batch, terms) if index and terms else {}
+        for rank, row in enumerate(batch, examined + 1):
+            owner = row["id"]
+            regions = {match["query"]: {**match, "source": "region", "model": "RegionCLIP-RN50",
+                                        "supported": match["score"] is not None and match["score"] >= threshold}
+                       for match in matched.get(owner, [])}
+            matches = [regions.get(term, {"query": term, "score": None, "source": "region", "supported": False})
+                       for term in details]
+            evidence = [*positive_checks(matches), *(check_constraint(c, regions, detections.get(owner)) for c in conditions)]
+            if any(check["status"] == "violated" for check in evidence):
+                continue
+            passed = sum(check["status"] == "met" for check in evidence)
+            score = 1 / (60 + rank) + weight * passed / (60 * max(1, checkable))
+            unknown = passed < len(evidence)
+            ranked.append((unknown, {**row, "score": score, "clip_rank": rank, "matches": matches,
+                                      "conditions": evidence, "region_evaluated": True}))
+        examined += len(batch)
+        if target_k is not None and len(ranked) >= target_k:
+            break
+        batch_size = min(batch_size * 2, 500)
     ranked.sort(key=lambda item: (item[0], -item[1]["score"]))
-    return [row for _, row in ranked] + [
-        {**row, "clip_rank": rank} for rank, row in enumerate(baseline[candidate_k:], candidate_k + 1)
-    ]
+    return [row for _, row in ranked[:target_k]], examined

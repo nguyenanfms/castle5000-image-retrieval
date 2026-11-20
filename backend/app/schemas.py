@@ -241,6 +241,23 @@ class QARequest(BaseModel):
         return self
 
 
+def validate_qa_box(box: list[float]) -> list[float]:
+    if len(box) != 4 or not all(math.isfinite(value) for value in box):
+        raise ValueError("box phải gồm 4 số hữu hạn [x1, y1, x2, y2]")
+    x1, y1, x2, y2 = box
+    if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+        raise ValueError("box phải chuẩn hóa trong khoảng [0, 1] với x1 < x2 và y1 < y2")
+    return box
+
+
+class QARegion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=120)
+    box: list[float]
+
+    _validate_box = field_validator("box")(validate_qa_box)
+
+
 class QAEvidenceItem(BaseModel):
     image_id: str
     caption: str | None = None
@@ -248,19 +265,13 @@ class QAEvidenceItem(BaseModel):
     thumbnail_url: str | None = None
     timestamp: str | None = None
     box: list[float] | None = None
+    regions: list[QARegion] = Field(default_factory=list)
     source: QAEVidenceSource = "image"
 
     @field_validator("box")
     @classmethod
     def validate_box(cls, v: list[float] | None) -> list[float] | None:
-        if v is None:
-            return None
-        if len(v) != 4 or not all(isinstance(x, (int, float)) and math.isfinite(x) for x in v):
-            raise ValueError("box phải gồm 4 số hữu hạn [x1, y1, x2, y2]")
-        x1, y1, x2, y2 = (float(x) for x in v)
-        if not (0.0 <= x1 < x2 <= 1.0 and 0.0 <= y1 < y2 <= 1.0):
-            raise ValueError("box phải chuẩn hóa trong khoảng [0, 1] với x1 < x2 và y1 < y2")
-        return [round(x1, 6), round(y1, 6), round(x2, 6), round(y2, 6)]
+        return [round(x, 6) for x in validate_qa_box(v)] if v is not None else None
 
 
 class QAAlternativeItem(BaseModel):
@@ -285,6 +296,7 @@ class QAResponse(BaseModel):
     request_id: str
     conversation_id: str | None = None
     question_type: str | None = None
+    operation: str | None = None
     examined_scope: dict = Field(default_factory=dict)
     claims: list[QAClaim] = Field(default_factory=list)
     rounds: int = 0

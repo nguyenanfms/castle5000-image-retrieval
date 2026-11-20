@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     qa_queue_timeout_s: float = 3.0
     qa_request_timeout_s: float = 60.0
     qa_sequence_path: Path = REPO_ROOT / "data" / "qa_sequences.json"
+    qa_people_catalog_path: Path = REPO_ROOT / "data" / "qa_people_reviewed.json"
     qa_rate_limit_per_min: int = 6
     qa_retrieval_k: int = 10
     qa_max_images: int = 5

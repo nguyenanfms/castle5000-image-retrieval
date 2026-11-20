@@ -53,7 +53,7 @@ Bạn có thể mở [trang trạng thái](http://127.0.0.1:8000/health) để k
 
 ## 4. Tìm ảnh lần đầu
 
-1. Nhập `Không có ai trong ảnh` và bấm **Tìm**. Ở bước **Từ khóa & điều kiện**, giữ mục vắng người rồi bấm **Tìm lại**. Câu mẫu này hoạt động ngay trên máy.
+1. Nhập mô tả ảnh bằng tiếng Việt hoặc tiếng Anh rồi bấm **Tìm kiếm**. Kiểm tra các mục ở **Từ khóa & điều kiện**. Bạn có thể chọn lại điều kiện rồi bấm **Tìm lại**.
 2. Để thử khung đối tượng, chọn **Nhập điều kiện thủ công**. Nhập `A man in a striped sweater opens a refrigerator` vào **Mô tả toàn cảnh bằng tiếng Anh**. Bấm **Thêm cụm** hai lần để nhập `man in a striped sweater` và `refrigerator`.
 3. Bấm **Áp dụng thay đổi**. Giữ hai cụm ở bước đối chiếu rồi bấm **Tìm lại**. Mở một ảnh và bấm từng cụm để xem khung tương ứng hoặc trạng thái thiếu bằng chứng.
 
@@ -61,7 +61,7 @@ Mặc định chương trình dùng DRES demo tại cổng 8090. Khi thử nút 
 
 ## Cấu hình tùy chọn
 
-**Gemini.** Tìm thủ công và truy vấn mẫu hoạt động với cấu hình mặc định. Để Gemini tự phân tích câu tiếng Việt hoặc tiếng Anh bất kỳ, tạo `.env` từ mẫu nếu chưa có.
+**Gemini.** Chế độ tìm thủ công nhận mô tả tiếng Anh và điều kiện do bạn nhập. Để Gemini tự phân tích câu tiếng Việt hoặc tiếng Anh, tạo `.env` từ mẫu nếu chưa có.
 
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
@@ -70,6 +70,21 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 Trên macOS hoặc Linux, dùng `test -f .env || cp .env.example .env`. Mở `.env`, điền `SEARCH_PLAN_API_KEY` bằng khóa của bạn rồi khởi động lại web. Có thể đặt `SEARCH_PLAN_MODEL` theo model mà khóa truy cập được. Nếu Gemini lỗi, dùng **Nhập điều kiện thủ công**.
 
 **QA.** Đặt `QA_ENABLED=true` trong `.env` và cấu hình nhà cung cấp theo các biến `QA_*` trong `.env.example`.
+
+Trong chế độ hỏi tự động, QA tách điều kiện chọn cảnh khỏi phép xử lý, sau đó kiểm tra từng điều kiện trên ảnh. Khi trả lời số đếm, bấm ảnh bằng chứng để xem các vùng được tính. Câu hỏi tổng số người áp dụng cho người nhìn thấy trong phạm vi ảnh. Nếu danh mục phát hiện có sẵn, QA rà danh mục để chọn ảnh đối chiếu và ghi rõ mức bao phủ. Kết quả tự động có thể báo số tối thiểu dựa trên một ảnh có nhiều người xuất hiện đồng thời.
+
+Để trả tổng số người khác nhau trên một phạm vi đã kiểm duyệt, dùng `QA_PEOPLE_CATALOG_PATH` trỏ tới một tệp JSON cục bộ. Tệp cần có một mục cho **mọi ảnh trong phạm vi**, kể cả ảnh không có người. Dùng cùng mã ẩn danh cho cùng một người qua các ảnh, với tọa độ `[x1, y1, x2, y2]` trong khoảng 0 đến 1 trên ảnh gốc. Ví dụ định dạng:
+
+```json
+{
+  "images": {
+    "08_1002.jpg": [{"label": "P1", "box": [0.1, 0.2, 0.4, 0.9]}],
+    "08_1010.jpg": []
+  }
+}
+```
+
+Danh mục này cần được rà thủ công trước khi sử dụng. Khởi động lại ứng dụng sau khi cập nhật tệp. Hai bản ghi trong ví dụ chỉ minh họa định dạng.
 
 **DRES thật.** Đặt `DRES_BASE_URL`, `DRES_EVALUATION_ID` và `SESSION_SECRET` trong `.env`, rồi thêm `--real-dres` vào lệnh chạy. Dùng tài khoản DRES được cấp. Giữ khóa và cấu hình riêng trong `.env`.
 

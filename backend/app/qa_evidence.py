@@ -146,6 +146,8 @@ class EvidenceLoader:
         evidence_prefix: str = "e1",
         region_records: list[dict] | None = None,
         include_crops: bool = True,
+        *,
+        check_count_detail: bool = False,
     ) -> LoadedImageBundle:
         path = self.resolve_safe_path(image_id)
         try:
@@ -179,7 +181,7 @@ class EvidenceLoader:
             include_crops
             and self._max_crops > 0
             and region_records
-            and not is_global_counting_question(question)
+            and (check_count_detail or not is_global_counting_question(question))
         ):
             selected_boxes: list[list[float]] = []
             sorted_regions = sorted(

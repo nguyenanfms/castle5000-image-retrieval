@@ -240,18 +240,21 @@ async def search(req: SearchRequest, request: Request):
     engine: SearchEngine = request.app.state.search_engine
     details = req.detail_queries or (split_query(req.query) if req.auto_split else [])
     if req.mode != 'legacy':
-        results, took_ms, mode, version = await engine.search_demo(
+        results, took_ms, mode, version, checked = await engine.search_demo(
             req.query or '. '.join(details), req.k, details, req.mode, req.conditions,
         )
         notice = None
         if req.mode == 'clip_region' and mode == 'clip':
             notice = ('Chưa có điều kiện hoặc cụm chi tiết để kiểm tra.' if not details and not req.conditions
                       else 'Dữ liệu kiểm tra vùng chưa sẵn sàng.')
+        elif req.conditions and mode == 'clip_region' and len(results) < req.k:
+            notice = (f'Còn {len(results)}/{req.k} ảnh sau khi kiểm tra {checked} ứng viên và lọc vi phạm.'
+                      if results else f'Không còn ảnh sau khi kiểm tra {checked} ứng viên và lọc vi phạm.')
         return SearchResponse(
             results=[{**row, 'thumb': f"/thumbs/{row['id']}"} for row in results],
             took_ms=took_ms, detail_queries=details, region_ready=version is not None,
             mode=mode, notice=notice, index_version=version,
-            candidate_k=min(settings.search_candidate_k, engine.num_images) if mode == 'clip_region' else None,
+            candidate_k=checked,
             region_threshold=settings.search_region_threshold if mode == 'clip_region' else None,
         )
     results, took_ms = await engine.search(req.query, req.k, details)

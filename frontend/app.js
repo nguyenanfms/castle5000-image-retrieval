@@ -15,7 +15,6 @@
   const queryInput = $(searchV2 ? "query-v2" : "query-input");
   const searchMeta = $("search-meta");
   const grid = $("results-grid");
-  const taskName = $("task-name");
   const userName = $("user-name");
   const logoutBtn = $("logout-btn");
 
@@ -29,7 +28,7 @@
   const retrievalQaSubmit = $("retrieval-qa-submit");
   const qaChatHistory = $("qa-chat-history");
   const qaChatEmpty = $("qa-chat-empty");
-  const qaContextDot = $("qa-context-dot");
+  const qaContextBar = $("qa-context-bar");
   const qaContextLabel = $("qa-context-label");
   const qaViewCurrentImgBtn = $("qa-view-current-img-btn");
   const qaClearImgBtn = $("qa-clear-img-btn");
@@ -58,12 +57,12 @@
   const confirmYes = $("confirm-yes");
   const confirmNo = $("confirm-no");
 
-  const STORAGE_KEY = searchV2 ? "castle5000_search_v2" : "castle5000_last_search";
   const regionControls = $("search-v2-controls");
   const planEditor = $("search-plan-editor");
   const planStatus = $("search-plan-status");
   const planToggle = $("search-manual");
   const searchLanguage = $("search-language");
+  const searchLimit = $("search-limit");
   let searchInProgress = false;
   let planKey = null;
   let preparedPlan = null;
@@ -80,6 +79,7 @@
     $("query-input").hidden = $("query-input").disabled = true;
     queryInput.hidden = queryInput.disabled = false;
     searchLanguage.hidden = false;
+    searchLimit.hidden = false;
     searchForm.querySelector('button[type="submit"]').textContent = "Tìm kiếm";
     $("inspector-close").hidden = false;
   }
@@ -147,6 +147,7 @@
       if (lightboxQaSection) {
         lightboxQaSection.hidden = searchV2 || !supportsSelected;
       }
+      lightboxOpenChatBtn.hidden = !supportsSelected || !supportsRetrieval;
       if (tabRetrievalQaBtn) {
         tabRetrievalQaBtn.hidden = !supportsRetrieval;
       }
@@ -157,6 +158,7 @@
       }
     } catch {
       if (lightboxQaSection) lightboxQaSection.hidden = true;
+      lightboxOpenChatBtn.hidden = true;
       if (tabRetrievalQaBtn) tabRetrievalQaBtn.hidden = true;
     }
   }
@@ -170,7 +172,6 @@
     logoutBtn.hidden = localQaMode;
     submitBtn.hidden = localQaMode;
     document.querySelectorAll(".competition-settings").forEach((el) => { el.hidden = localQaMode; });
-    if (localQaMode) taskName.textContent = "Thử QA · Gemini";
     api("/api/region-status").catch(() => {});
     refreshQaStatus();
     $("password").value = "";
@@ -196,7 +197,6 @@
         body: JSON.stringify({ username, password }),
       });
       showLoggedIn(data.username, data.role);
-      restoreLastSearch();
       pollTask();
     } catch (err) {
       loginError.textContent = err.message || "Đăng nhập thất bại";
@@ -240,10 +240,23 @@
 
   function renderResults(results) {
     currentResults = results;
+    const checked = searchV2 && results.some(row => row.conditions?.some(check => check.kind !== "present"));
+    const unconfirmed = checked ? new Set(results.filter(row =>
+      row.conditions?.some(check => check.status === "unknown")).map(row => row.id)) : new Set();
+    const allUnconfirmed = unconfirmed.size > 0 && unconfirmed.size === results.length;
+    $("search-results-title").textContent = allUnconfirmed ? "Ảnh chưa xác minh" : "Ảnh tìm được";
     $("search-results-heading").hidden = !searchV2 || !results.length || grid.hidden;
     $("search-results-count").textContent = `${results.length} ảnh`;
     grid.innerHTML = "";
-    for (const r of results) {
+    let unconfirmedHeadingShown = false;
+    for (const [index, r] of results.entries()) {
+      if (!unconfirmedHeadingShown && !allUnconfirmed && unconfirmed.has(r.id)) {
+        const heading = document.createElement("h3");
+        heading.className = "search-unconfirmed-heading";
+        heading.textContent = `Chưa xác minh · ${unconfirmed.size} ảnh`;
+        grid.appendChild(heading);
+        unconfirmedHeadingShown = true;
+      }
       const tile = document.createElement(searchV2 ? "button" : "div");
       tile.className = "thumb";
 
@@ -254,6 +267,7 @@
       const scoreText = !searchV2 && typeof r.score === "number" ? ` (score ${r.score.toFixed(3)})` : "";
       img.title = `${r.id}${scoreText}`;
       if (searchV2) {
+        tile.style.setProperty("--item-delay", `${Math.min(index, 7) * 24}ms`);
         tile.type = "button";
         tile.dataset.id = r.id;
         tile.setAttribute("aria-pressed", String(selectedSearchImage === r.id));
@@ -271,30 +285,6 @@
       tile.appendChild(img);
       tile.appendChild(label);
       grid.appendChild(tile);
-    }
-  }
-
-  function saveLastSearch(query, results) {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ query, results }));
-    } catch {
-      /* storage may be unavailable; non-critical */
-    }
-  }
-
-  function restoreLastSearch() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const { query, results } = JSON.parse(raw);
-      queryInput.value = query || "";
-      if (searchV2) return;
-      if (Array.isArray(results) && results.length) {
-        renderResults(results);
-        searchMeta.textContent = `${results.length} kết quả (đã lưu từ lần tìm trước)`;
-      }
-    } catch {
-      /* ignore corrupt/missing storage */
     }
   }
 
@@ -317,7 +307,6 @@
       });
       renderResults(data.results);
       searchMeta.textContent = `${data.results.length} kết quả, ${data.took_ms}ms. ${data.notice || ""}`;
-      saveLastSearch(query, data.results);
     } catch (err) {
       if (err.status === 401) {
         showLoggedOut();
@@ -481,7 +470,8 @@
     if (!followWorkflow) return;
     if (phase === "planning" || phase === "plan-error") selectWorkflowStep("query");
     if (["review", "searching"].includes(phase)) selectWorkflowStep("conditions");
-    if (phase === "search-error" || (phase === "done" && !workflowStep)) selectWorkflowStep("results");
+    if (phase === "search-error") selectWorkflowStep("results");
+    if (phase === "done") selectWorkflowStep(null);
   }
 
   function selectWorkflowStep(step) {
@@ -516,7 +506,7 @@
         ? ["search", "edit"] : ["edit"]],
       results: ["Kết quả tìm ảnh", result ? (result.results.length
         ? `${result.results.length} ảnh${result.mode === "clip_region" ? ` · Đã đối chiếu ${result.candidate_k} ảnh ứng viên` : " · Tìm theo mô tả toàn cảnh"}`
-        : "Không tìm thấy ảnh phù hợp.") : workflowPhase === "searching" ? "Đang tìm và đối chiếu các mục đã chọn."
+        : result.notice || "Không tìm thấy ảnh phù hợp.") : workflowPhase === "searching" ? "Đang tìm và đối chiếu các mục đã chọn."
         : workflowPhase === "search-error" ? "Chưa tìm được ảnh. Bạn có thể thử lại."
         : "Bấm Tìm kiếm để lấy ảnh.", result?.results.length ? ["results"] : (workflowPhase === "search-error" && preparedPlan ? ["search"] : [])],
     };
@@ -588,6 +578,7 @@
     const apply = $("search-apply-plan");
     button.disabled = apply.disabled = true;
     planToggle.disabled = true;
+    searchLimit.disabled = true;
     try {
       if (action === "plan") {
         const key = currentPlanKey();
@@ -652,12 +643,11 @@
       renderResults([]);
       const response = await api("/api/search", {
         method: "POST",
-        body: JSON.stringify({ query, detail_queries: detailQueries, conditions, mode: "clip_region", k: 24 }),
+        body: JSON.stringify({ query, detail_queries: detailQueries, conditions, mode: "clip_region", k: Number(searchLimit.value) }),
       });
       renderResults(response.results);
       renderWorkflow("done", response);
       searchMeta.textContent = response.notice || (response.results.length ? "" : "Không tìm thấy ảnh phù hợp.");
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ query: queryInput.value })); } catch {}
     } catch (err) {
       if (err.status === 401) showLoggedOut();
       else { renderWorkflow("search-error"); searchMeta.textContent = err.message; }
@@ -666,6 +656,7 @@
       searchForm.removeAttribute("aria-busy");
       button.disabled = apply.disabled = false;
       planToggle.disabled = false;
+      searchLimit.disabled = false;
       renderWorkflowPopup();
       if (action === "edited" && planEditor.hidden) $("flow-conditions").querySelector("button").focus();
       if (action === "selected" && workflowStep === "results") $("flow-results").querySelector("button").focus();
@@ -673,6 +664,11 @@
   }
 
   if (searchV2) {
+    searchLimit.addEventListener("change", () => {
+      if (workflowPhase === "done" && !workflowSelectionChanged && currentPlanKey() === planKey) {
+        runDemoSearch("selected");
+      }
+    });
     planToggle.addEventListener("click", () => {
       if (!planEditor.hidden) {
         showPlanEditor(false);
@@ -998,31 +994,40 @@
   }
 
   function highlightEvidenceBox(box, labelText) {
-    if (!Array.isArray(box) || box.length !== 4) return;
+    highlightEvidenceRegions([{box, label: labelText}]);
+  }
+
+  function highlightEvidenceRegions(regions) {
     const overlay = $("matched-overlay");
     const { w: natW, h: natH } = getNaturalOverlaySize();
     const ns = "http://www.w3.org/2000/svg";
-    const [x1, y1, x2, y2] = box;
     overlay.replaceChildren();
-    const rect = document.createElementNS(ns, "rect");
-    rect.setAttribute("x", String(x1 * natW));
-    rect.setAttribute("y", String(y1 * natH));
-    rect.setAttribute("width", String((x2 - x1) * natW));
-    rect.setAttribute("height", String((y2 - y1) * natH));
-    rect.setAttribute("fill", "none");
-    rect.setAttribute("stroke", "#4f8cff");
-    rect.setAttribute("stroke-width", "4");
-    overlay.appendChild(rect);
-    if (labelText) {
-      const txt = document.createElementNS(ns, "text");
-      txt.setAttribute("x", String(Math.max(4, x1 * natW + 6)));
-      txt.setAttribute("y", String(Math.max(18, y1 * natH - 6)));
-      txt.setAttribute("fill", "#4f8cff");
-      txt.setAttribute("font-size", "16");
-      txt.setAttribute("font-family", "sans-serif");
-      txt.textContent = labelText;
-      overlay.appendChild(txt);
-    }
+    regions.forEach(({box, label}, index) => {
+      if (!Array.isArray(box) || box.length !== 4) return;
+      const [x1, y1, x2, y2] = box;
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x", String(x1 * natW));
+      rect.setAttribute("y", String(y1 * natH));
+      rect.setAttribute("width", String((x2 - x1) * natW));
+      rect.setAttribute("height", String((y2 - y1) * natH));
+      rect.setAttribute("fill", "none");
+      rect.setAttribute("stroke", "#4f8cff");
+      rect.setAttribute("stroke-width", "4");
+      overlay.appendChild(rect);
+      if (label || regions.length > 1) {
+        const txt = document.createElementNS(ns, "text");
+        txt.setAttribute("x", String(Math.max(4, x1 * natW + 6)));
+        txt.setAttribute("y", String(Math.max(18, y1 * natH - 6)));
+        txt.setAttribute("fill", "#4f8cff");
+        txt.setAttribute("font-size", "16");
+        txt.setAttribute("font-family", "sans-serif");
+        txt.setAttribute("paint-order", "stroke");
+        txt.setAttribute("stroke", "#10141b");
+        txt.setAttribute("stroke-width", "3");
+        txt.textContent = label || String(index + 1);
+        overlay.appendChild(txt);
+      }
+    });
     overlay.removeAttribute("hidden");
     overlay.style.display = "block";
   }
@@ -1069,28 +1074,13 @@
     qaChatHistory.scrollTop = qaChatHistory.scrollHeight;
   }
 
-  function appendContextDivider(text) {
-    if (!qaChatHistory) return;
-    if (qaChatEmpty) qaChatEmpty.hidden = true;
-    const div = document.createElement("div");
-    div.className = "qa-context-divider";
-    div.textContent = text;
-    qaChatHistory.appendChild(div);
-    scrollChatToBottom();
-  }
-
-  function setActiveQaImage(newImageId, notifyInChat = true) {
-    const normalized = newImageId ? String(newImageId).trim() : null;
-    const changed = activeQaImageId !== normalized;
-    activeQaImageId = normalized;
-
-    if (qaContextDot) {
-      qaContextDot.classList.toggle("pinned", Boolean(activeQaImageId));
-    }
+  function setActiveQaImage(newImageId) {
+    activeQaImageId = newImageId ? String(newImageId).trim() : null;
+    qaContextBar.hidden = !activeQaImageId;
     if (qaContextLabel) {
       qaContextLabel.textContent = activeQaImageId
-        ? `Đang hỏi trên ảnh: ${activeQaImageId}`
-        : "Tự tìm ảnh liên quan";
+        ? `Ảnh đang hỏi · ${activeQaImageId}`
+        : "";
     }
     if (qaViewCurrentImgBtn) {
       qaViewCurrentImgBtn.hidden = !activeQaImageId;
@@ -1101,14 +1091,10 @@
     if (qaHintRow) {
       qaHintRow.hidden = Boolean(activeQaImageId);
     }
-
-    if (changed && notifyInChat) {
-      if (activeQaImageId) {
-        appendContextDivider(`— Đang xét ảnh: ${activeQaImageId} (các câu hỏi tiếp theo sẽ hỏi trên cùng ảnh này) —`);
-      } else {
-        appendContextDivider("— Đã đổi ngữ cảnh: Tự tìm ảnh mới theo câu hỏi —");
-      }
-    }
+    qaChatEmpty.querySelectorAll("[data-qa-pinned]").forEach((button) => {
+      button.textContent = activeQaImageId ? button.dataset.qaPinned : button.dataset.qaSuggestion;
+    });
+    if (!activeRetrievalTurn) renderRetrievalPanel(null);
   }
 
   if (qaViewCurrentImgBtn) {
@@ -1121,7 +1107,7 @@
 
   if (qaClearImgBtn) {
     qaClearImgBtn.addEventListener("click", () => {
-      setActiveQaImage(null, true);
+      setActiveQaImage(null);
       if (retrievalQaQuestion) retrievalQaQuestion.focus();
     });
   }
@@ -1134,7 +1120,7 @@
         switchModeTab("retrieval_qa");
       }
       if (targetId) {
-        setActiveQaImage(targetId, true);
+        setActiveQaImage(targetId);
       }
     });
   }
@@ -1147,7 +1133,13 @@
     btn.title = ev.image_id;
     btn.addEventListener("click", () => {
       openLightbox(ev.image_id);
-      if (Array.isArray(ev.box)) {
+      if (ev.regions?.length) {
+        const showRegions = () => {
+          if (currentImageId === ev.image_id) highlightEvidenceRegions(ev.regions);
+        };
+        if (lightboxImg.complete && lightboxImg.naturalWidth) showRegions();
+        else lightboxImg.addEventListener("load", showRegions, { once: true });
+      } else if (Array.isArray(ev.box)) {
         highlightEvidenceBox(ev.box, ev.image_id);
       }
     });
@@ -1160,16 +1152,24 @@
     const examined = new Set(scope.image_ids || data.examined_ids || []);
     const evidence = new Map((data.evidence || []).map(ev => [ev.image_id, ev]));
     const ids = [...new Set([...(scope.retrieved_image_ids || data.image_ids || []), ...examined, ...evidence.keys()])];
+    const pinnedPreview = !turn && activeQaImageId;
+    if (pinnedPreview) ids.push(pinnedPreview);
     const confirmed = data.status === "answered";
-    $("qa-retrieval-question").textContent = turn?.question || "";
-    $("qa-retrieval-question").hidden = !turn;
-    $("qa-retrieval-summary").textContent = ids.length
+    $("qa-retrieval-panel").classList.toggle("has-turn", Boolean(turn || pinnedPreview));
+    const coverage = scope.coverage;
+    const summary = $("qa-retrieval-summary");
+    summary.hidden = !turn;
+    summary.textContent = coverage?.source === "reviewed_catalog"
+      ? `${coverage.reviewed_images} ảnh đã kiểm duyệt · ${evidence.size} ảnh bằng chứng`
+      : coverage
+        ? `${coverage.indexed_images}/${coverage.total_images} ảnh có dữ liệu phát hiện · ${examined.size} ảnh đã đối chiếu`
+      : ids.length
       ? `${ids.length} ảnh tìm được · ${examined.size} ảnh đã đọc${confirmed ? ` · ${evidence.size} ảnh bằng chứng` : ""}`
-      : turn ? (data.status === "error" ? "Truy xuất chưa hoàn tất. Bạn có thể thử lại." : data.status ? "Chưa có ảnh phù hợp cho câu hỏi này." : "Đang tìm ảnh cho câu hỏi…") : "Ảnh liên quan sẽ xuất hiện khi bạn đặt câu hỏi.";
-    $("qa-retrieval-empty").hidden = ids.length > 0;
+      : turn ? (data.status === "error" ? "Truy xuất chưa hoàn tất." : data.status ? "Chưa có ảnh phù hợp." : "Đang tìm ảnh…") : "";
+    $("qa-retrieval-empty").hidden = Boolean(turn || pinnedPreview);
     const grid = $("qa-retrieval-grid");
     // Avoid rebuilding loaded thumbnails on every progress tick.
-    const key = JSON.stringify([ids, [...examined], [...evidence], confirmed]);
+    const key = JSON.stringify([ids, [...examined], [...evidence], confirmed, pinnedPreview]);
     if (grid.dataset.contentKey === key) return;
     grid.dataset.contentKey = key;
     grid.replaceChildren();
@@ -1186,9 +1186,9 @@
       img.addEventListener("error", () => { img.src = "/images/" + encodeURIComponent(id); }, { once: true });
       button.appendChild(img);
       const caption = document.createElement("figcaption");
-      const name = document.createElement("span"); name.textContent = `${index + 1}. ${id}`;
+      const name = document.createElement("span"); name.textContent = pinnedPreview ? id : `${index + 1}. ${id}`;
       const badge = document.createElement("span"); badge.className = "qa-image-state";
-      badge.textContent = ev ? (confirmed ? "Bằng chứng" : "Liên quan") : examined.has(id) ? "Đã đọc" : "Tìm được";
+      badge.textContent = pinnedPreview ? "Đang hỏi" : ev ? (confirmed ? "Bằng chứng" : "Liên quan") : examined.has(id) ? "Đã đọc" : "Tìm được";
       caption.append(name, badge);
       figure.append(button, caption);
       if (ev?.caption) figure.title = ev.caption;
@@ -1289,7 +1289,9 @@
       sources.setAttribute("aria-label", "Ảnh đi kèm câu trả lời");
       const heading = document.createElement("p");
       heading.className = "qa-sources-title";
-      heading.textContent = resp.status === "answered"
+      heading.textContent = resp.status === "answered" && resp.partial
+        ? "Ảnh hỗ trợ phần đã xác nhận"
+        : resp.status === "answered"
         ? "Ảnh hỗ trợ câu trả lời"
         : "Ảnh liên quan · Chưa đủ bằng chứng để kết luận";
       const gallery = document.createElement("div");
@@ -1339,7 +1341,10 @@
     viewImages.textContent = "Xem ảnh truy xuất →";
     viewImages.addEventListener("click", () => {
       selectRetrievalTurn(turn);
-      if (window.innerWidth <= 760) $("qa-retrieval-grid").scrollIntoView({ behavior: "smooth", block: "start" });
+      if (window.innerWidth <= 820) {
+        const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+        $("qa-retrieval-panel").scrollIntoView({ behavior, block: "start" });
+      }
     });
     turn.footer.appendChild(viewImages);
     if (resp.request_id) turn.turnEl.dataset.requestId = resp.request_id;
@@ -1361,7 +1366,7 @@
         switchBtn.className = "qa-link-btn";
         switchBtn.textContent = "Đổi sang ảnh này";
         switchBtn.addEventListener("click", () => {
-          setActiveQaImage(altEv.image_id, true);
+          setActiveQaImage(altEv.image_id);
           if (retrievalQaQuestion) retrievalQaQuestion.focus();
         });
         noteEl.appendChild(switchBtn);
@@ -1397,7 +1402,7 @@
           useImgBtn.className = "qa-link-btn";
           useImgBtn.textContent = "Hỏi tiếp trên ảnh này";
           useImgBtn.addEventListener("click", () => {
-            setActiveQaImage(primaryEv.image_id, true);
+            setActiveQaImage(primaryEv.image_id);
             if (retrievalQaQuestion) retrievalQaQuestion.focus();
           });
           actions.appendChild(useImgBtn);
@@ -1464,7 +1469,7 @@
       }
 
       // Sync active image in chat history so follow-up questions continue on this image
-      setActiveQaImage(capturedImageId, true);
+      setActiveQaImage(capturedImageId);
       const chatTurn = appendChatTurn(
         question,
         lang === "en" ? "Checking image…" : "Đang trả lời…"
@@ -1582,7 +1587,7 @@
 
   document.querySelectorAll("[data-qa-suggestion]").forEach(button => {
     button.addEventListener("click", () => {
-      retrievalQaQuestion.value = button.dataset.qaSuggestion;
+      retrievalQaQuestion.value = activeQaImageId ? button.dataset.qaPinned : button.dataset.qaSuggestion;
       resizeQaInput();
       retrievalQaQuestion.focus();
     });
@@ -1591,7 +1596,7 @@
   $("qa-new-chat")?.addEventListener("click", () => {
     abortRetrievalQa();
     qaConversationId = crypto.randomUUID();
-    setActiveQaImage(null, false);
+    setActiveQaImage(null);
     qaChatHistory.replaceChildren(qaChatEmpty);
     qaChatEmpty.hidden = false;
     selectRetrievalTurn(null);
@@ -1681,8 +1686,8 @@
           const progress = await api("/api/qa/progress/" + encodeURIComponent(qaConversationId), { signal: controller.signal });
           if (reqSeq !== retrievalQaSeq || progressFinished) return;
           const labels = lang === "en"
-            ? { planning: "Understanding question…", retrieving: "Finding images…", observing: "Examining evidence…", synthesizing: "Combining evidence…", verifying: "Checking answer…" }
-            : { planning: "Đang hiểu câu hỏi…", retrieving: "Đang tìm ảnh…", observing: "Đang đối chiếu…", synthesizing: "Đang tổng hợp…", verifying: "Đang kiểm tra câu trả lời…" };
+            ? { planning: "Understanding question…", scanning: "Scanning the image catalog…", retrieving: "Finding images…", observing: "Examining evidence…", synthesizing: "Combining evidence…", verifying: "Checking answer…" }
+            : { planning: "Đang hiểu câu hỏi…", scanning: "Đang rà danh mục ảnh…", retrieving: "Đang tìm ảnh…", observing: "Đang đối chiếu…", synthesizing: "Đang tổng hợp…", verifying: "Đang kiểm tra câu trả lời…" };
           if (labels[progress.stage]) chatTurn.botText.textContent = labels[progress.stage];
           if (progress.image_ids?.length) {
             chatTurn.retrievalData = progress;
@@ -1791,11 +1796,6 @@
     try {
       const task = await api("/api/task");
       taskRunning = task.running;
-      if (!task.running) {
-        taskName.textContent = "Chưa có task đang chạy";
-      } else {
-        taskName.textContent = `${task.name} (${task.task_group || ""})`;
-      }
       setSearchEnabled(true);
       submitBtn.disabled = !task.running || !selectedEvaluationId;
     } catch (err) {
@@ -1804,7 +1804,6 @@
         return;
       }
       // DRES unreachable or no evaluation configured: fail soft, keep retrying.
-      taskName.textContent = "Không lấy được thông tin task";
       submitBtn.disabled = true;
       setSearchEnabled(true);
     } finally {
@@ -1841,11 +1840,21 @@
     }
   };
 
+  window.addEventListener("pageshow", (event) => {
+    // Back/forward navigation can restore the old document, including the chat.
+    if (event.persisted) location.reload();
+  });
+
   (async function init() {
+    try {
+      localStorage.removeItem("castle5000_search_v2");
+      localStorage.removeItem("castle5000_last_search");
+    } catch {
+      /* Browser storage may be unavailable. */
+    }
     try {
       const me = await api("/api/me");
       showLoggedIn(me.username, me.role);
-      restoreLastSearch();
       pollTask();
     } catch {
       showLoggedOut();
