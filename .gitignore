@@ -1,0 +1,134 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# generated offline / contains the image corpus + per-image metadata --
+# never commit any of it; rebuild locally with tools/build_index.py
+data/
+
+# original images are never committed
+*.jpg
+*.jpeg
+*.png
+!frontend/**/*.png
+
+.DS_Store
+node_modules/
+frontend/dist/
+
+# local secrets/config -- copy .env.example to .env and fill in real values
+.env
+.env.*
+!.env.example
+/DRES_HuongDan_Castle5000.pdf
+*.faiss
+*.onnx
+*.pt
+*.pth
+*.safetensors
+experiments/evaluation/annotations/private/
+
+# internal planning doc -- not for the public repo
+Technical note*.md
+
+# local agent config
+CLAUDE.md
+docs/agents/
+
+.cache/
+*.log
+
+output/
+
+# Local research and development artifacts.
+/docs/
+/experiments/
+/notebooks/
+/backend/tests/
+/pytest.ini
+/requirements-regions.txt
+/tools/*
+!/tools/__init__.py
+!/tools/build_index.py
+!/tools/mock_dres.py
+!/tools/start_local.py
+/runtime-data/
+
+# Retired local models, labels and indexes; never loaded by the application.
+archive/
+
+# Additional Python environments and caches (keep these files locally).
+venv/
+env/
+ENV/
+.venv*/
+.virtualenv/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.ipynb_checkpoints/
+*.pyo
+*.pyd
+.coverage
+.coverage.*
+htmlcov/
+
+# Downloaded models, generated arrays and packaged datasets.
+.huggingface/
+models/
+weights/
+checkpoints/
+runs/
+wandb/
+*.bin
+*.ckpt
+*.h5
+*.hdf5
+*.tflite
+*.gguf
+*.ggml
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Local credentials and private key material.
+.aws/
+.ssh/
+.netrc
+.pypirc
+.hf_token
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials*.json
+service-account*.json
+secrets*.json
+
+# Temporary files and local editor state.
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.idea/
+Thumbs.db
+Desktop.ini
+
+# The runtime bundle is distributed through Git LFS.
+!/runtime/castle5000-media.zip
+!/runtime/castle5000-indexes.zip
+!/runtime/open_clip_model.safetensors

@@ -1,0 +1,41 @@
+# Deployment behind Caddy on the same network as DRES.
+services:
+  retrieval:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DRES_BASE_URL: ${DRES_BASE_URL:-http://dres:8080}
+      DRES_EVALUATION_ID: ${DRES_EVALUATION_ID:-}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET outside the repo}
+      SESSION_COOKIE_SECURE: "true"
+      MAX_K: ${MAX_K:-100}
+      RATE_LIMIT_PER_MIN: ${RATE_LIMIT_PER_MIN:-30}
+      SEARCH_PLAN_API_KEY: ${SEARCH_PLAN_API_KEY:-}
+      SEARCH_PLAN_MODEL: ${SEARCH_PLAN_MODEL:-gemini-3.5-flash-lite}
+      SEARCH_REGION_THRESHOLD: "0.21761782467365265"
+      EMBED_PRETRAINED: /app/runtime/open_clip_model.safetensors
+    volumes:
+      - ./runtime-data:/app/data:ro
+      - ./runtime:/app/runtime:ro
+    expose:
+      - "5000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health').status==200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+    networks:
+      - dres_net
+
+networks:
+  dres_net:
+    external: false

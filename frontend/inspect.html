@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiểm tra vùng — Castle5000</title><link rel="stylesheet" href="style.css?v=inspector1"><link rel="stylesheet" href="inspect.css?v=1"></head>
+<body>
+<main>
+  <a href="/">← Về tìm ảnh</a>
+  <h1>Kiểm tra vùng và nhãn</h1>
+  <p>Đối tượng do Grounding DINO phát hiện. CLIP mã hóa các vùng để tìm kiếm; không tự gán nhãn hành động.</p>
+  <form id="image-form"><input id="image-id" aria-label="Tên file ảnh" placeholder="Ví dụ: 09_1574.jpg" required><button>Xem ảnh</button></form>
+  <p id="inspect-status" role="status"></p>
+  <p id="auth-notice" hidden>Hãy <a href="/">đăng nhập ở trang tìm kiếm</a>, sau đó quay lại trang này.</p>
+  <div class="inspect-layout" id="inspect-content" hidden>
+    <section class="inspect-picture"><svg id="inspect-svg" viewBox="0 0 1280 720" role="img" aria-label="Ảnh và các vùng được phát hiện"><image id="inspect-image" x="0" y="0" width="1280" height="720"/><g id="inspect-boxes"></g></svg></section>
+    <aside>
+      <label>Hiển thị<select id="inspect-mode"><option value="objects">Nhãn đối tượng đã lưu</option><option value="regions">Vùng dùng để truy xuất</option></select></label>
+      <label>Điểm tối thiểu: <span id="threshold-value">0.30</span><input id="inspect-threshold" type="range" min="0" max="1" step="0.05" value="0.30"></label>
+      <button id="show-all" type="button">Xem tất cả</button>
+      <p class="inspect-hint">Bấm một dòng để chỉ xem khung đó. Điểm là độ tin cậy của bộ phát hiện, không phải xác suất đúng đã được hiệu chỉnh.</p>
+      <div id="inspect-list"></div>
+    </aside>
+  </div>
+  <p class="inspect-hint">Chỉ hiển thị các đối tượng/vùng đã được lưu vào chỉ mục. Vùng ghép người–đồ vật là ứng viên tương tác, chưa xác nhận người đang sử dụng đồ vật. Trang này không sửa nhãn hoặc huấn luyện lại mô hình.</p>
+</main>
+<script src="inspect.js?v=1"></script>
+</body></html>

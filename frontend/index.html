@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="vi" data-type="software">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Castle5000 Retrieval</title>
+  <meta name="page-type" content="software" />
+  <meta name="site-kind" content="software" />
+  <link rel="stylesheet" href="/style.css?v=search-studio-3" />
+</head>
+<body>
+  <header class="statusbar" id="statusbar" hidden>
+    <span id="task-name">Chưa có task đang chạy</span>
+    <span class="spacer"></span>
+    <span id="user-name"></span>
+    <button id="logout-btn">Đăng xuất</button>
+  </header>
+
+  <main>
+    <section id="login-view">
+      <form id="login-form">
+        <h1>Tìm ảnh Castle5000</h1>
+        <label>
+          Tên đăng nhập (DRES)
+          <input type="text" id="username" autocomplete="username" required />
+        </label>
+        <label>
+          Mật khẩu
+          <input type="password" id="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit">Đăng nhập</button>
+        <p class="error" id="login-error" hidden></p>
+      </form>
+    </section>
+
+    <section id="search-view" hidden>
+      <div class="search-header">
+        <h1>Tìm ảnh Castle5000</h1>
+        <div class="search-navigation">
+        <a id="search-version-link" href="/search-v2/">Thử tìm theo vùng</a>
+        <div id="mode-tabs" class="mode-tabs" role="tablist" aria-label="Chế độ tra cứu">
+          <button type="button" id="tab-search-btn" class="tab-btn active" role="tab" aria-selected="true">Tìm ảnh</button>
+          <button type="button" id="tab-retrieval-qa-btn" class="tab-btn" role="tab" aria-selected="false" hidden>Hỏi trên bộ ảnh</button>
+        </div>
+        </div>
+      </div>
+
+      <form id="search-form">
+        <input
+          type="text"
+          id="query-input"
+          placeholder="Nhập mô tả ảnh bằng tiếng Anh…"
+          aria-label="Câu truy vấn tìm ảnh"
+          required
+          maxlength="1200"
+        />
+        <textarea id="query-v2" rows="2" maxlength="1200" aria-label="Câu truy vấn tìm ảnh"
+          placeholder="Vòi rửa chén cạnh bàn đảo bếp" hidden disabled required></textarea>
+        <select id="search-language" aria-label="Ngôn ngữ truy vấn" hidden>
+          <option value="auto">Tự nhận diện</option>
+          <option value="vi">Tiếng Việt</option>
+          <option value="en">English</option>
+        </select>
+        <button type="submit">Tìm</button>
+      </form>
+
+      <section id="search-v2-controls" aria-label="Tiến độ tìm ảnh" hidden>
+        <ol class="search-flow" id="search-flow" data-phase="idle">
+          <li id="flow-query" data-state="idle" aria-current="step">
+            <button type="button" class="flow-node" data-flow-step="query" aria-controls="workflow-popup" aria-expanded="false">
+              <span class="flow-point" aria-hidden="true"><i class="flow-glyph glyph-document"></i></span>
+              <strong>Câu truy vấn</strong><span id="flow-query-state">Việt hoặc Anh</span>
+            </button>
+          </li>
+          <li id="flow-conditions" data-state="idle">
+            <button type="button" class="flow-node" data-flow-step="conditions" aria-controls="workflow-popup" aria-expanded="false">
+              <span class="flow-point" aria-hidden="true"><i class="flow-glyph glyph-checklist"></i></span>
+              <strong>Từ khóa &amp; điều kiện</strong><span id="flow-conditions-state">Chờ phân tích</span>
+            </button>
+          </li>
+          <li id="flow-results" data-state="idle">
+            <button type="button" class="flow-node" data-flow-step="results" aria-controls="workflow-popup" aria-expanded="false">
+              <span class="flow-point" aria-hidden="true"><i class="flow-glyph glyph-results"></i></span>
+              <strong>Kết quả</strong><span id="flow-results-state">Chờ đối chiếu</span>
+            </button>
+          </li>
+        </ol>
+        <p class="workflow-announcement" id="workflow-announcement" role="status"></p>
+        <section class="workflow-popup" id="workflow-popup" aria-labelledby="workflow-popup-title" hidden>
+          <div id="workflow-popup-body">
+            <h2 id="workflow-popup-title"></h2>
+            <p id="workflow-popup-message"></p>
+            <div class="workflow-plan" id="workflow-plan" hidden>
+              <div id="workflow-objects-group">
+                <p class="workflow-keys-label" id="workflow-objects-label"><i class="workflow-mark mark-object" aria-hidden="true"></i>Đối tượng và thuộc tính</p>
+                <ul id="workflow-objects" class="workflow-conditions" aria-labelledby="workflow-objects-label"></ul>
+              </div>
+              <div id="workflow-conditions-group">
+                <p class="workflow-keys-label" id="workflow-conditions-label"><i class="workflow-mark mark-condition" aria-hidden="true"></i>Điều kiện</p>
+                <ul id="workflow-conditions" class="workflow-conditions" aria-labelledby="workflow-conditions-label"></ul>
+              </div>
+              <details class="workflow-caption">
+                <summary>Mô tả toàn cảnh</summary>
+                <p id="workflow-caption" lang="en"></p>
+              </details>
+            </div>
+            <div id="workflow-popup-actions">
+              <button type="button" data-workflow-action="query">Sửa câu truy vấn</button>
+              <button type="button" data-workflow-action="search">Tìm lại</button>
+              <button type="button" data-workflow-action="edit">Sửa chi tiết</button>
+              <button type="button" data-workflow-action="results">Xem ảnh đầu tiên</button>
+            </div>
+          </div>
+        </section>
+        <div class="workflow-controls">
+          <p id="search-plan-status" role="status" hidden></p>
+          <button type="button" class="search-quiet" id="search-manual" aria-controls="search-plan-editor" aria-expanded="false">Nhập điều kiện thủ công</button>
+        </div>
+        <div id="search-plan-editor" hidden>
+          <form id="search-plan-form">
+            <label>Mô tả toàn cảnh bằng tiếng Anh
+              <textarea id="search-global" rows="2" maxlength="1200" required></textarea>
+            </label>
+            <div class="workflow-editor-head">
+              <span>Cụm đối tượng</span>
+              <button type="button" id="search-add-phrase" class="search-quiet">Thêm cụm</button>
+            </div>
+            <div id="search-phrases" aria-label="Cụm đối tượng"></div>
+            <div class="workflow-editor-head">
+              <span>Điều kiện bổ sung</span>
+              <button type="button" id="search-add-condition" class="search-quiet">Thêm điều kiện</button>
+            </div>
+            <div id="search-conditions" aria-label="Điều kiện bổ sung"></div>
+            <div class="search-editor-actions">
+              <button type="submit" id="search-apply-plan">Áp dụng thay đổi</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="retrieval-qa-panel" class="qa-workspace" hidden>
+      <div class="qa-chat-container">
+        <div class="qa-chat-header">
+          <div class="qa-chat-heading"><span class="qa-brand-mark" aria-hidden="true">C</span><div><h2>Castle QA</h2><p>Hỏi đáp cùng bộ ảnh của bạn</p></div></div>
+          <div class="qa-chat-header-actions">
+            <select id="retrieval-qa-lang" aria-label="Ngôn ngữ trả lời"><option value="vi">Tiếng Việt</option><option value="en">English</option></select>
+            <button type="button" id="qa-new-chat" class="qa-quiet-btn">Chat mới</button>
+          </div>
+        </div>
+        <div class="qa-context-bar">
+          <div class="qa-context-info">
+            <span class="qa-context-dot" id="qa-context-dot"></span>
+            <span id="qa-context-label">Tự tìm ảnh liên quan</span>
+            <button type="button" id="qa-view-current-img-btn" class="qa-link-btn" hidden>Xem ảnh</button>
+            <button type="button" id="qa-clear-img-btn" class="qa-link-btn" hidden>Bỏ chọn ảnh</button>
+          </div>
+        </div>
+
+        <div id="qa-chat-history" class="qa-chat-history" role="log" aria-live="polite">
+          <div class="qa-chat-empty" id="qa-chat-empty">
+            <span class="qa-empty-kicker">CASTLE QA</span>
+            <h3>Bạn muốn biết điều gì trong bộ ảnh?</h3>
+            <p>Đặt câu hỏi. Mình sẽ tìm ảnh liên quan và đối chiếu bằng chứng.</p>
+            <div class="qa-suggestions" aria-label="Câu hỏi gợi ý">
+              <button type="button" data-qa-suggestion="Người mặc áo đỏ đang làm gì?">Người mặc áo đỏ đang làm gì?</button>
+              <button type="button" data-qa-suggestion="Trong các cảnh nấu ăn có những dụng cụ nào?">Có những dụng cụ nấu ăn nào?</button>
+              <button type="button" data-qa-suggestion="Tìm ảnh có tủ lạnh đang mở.">Tìm cảnh tủ lạnh đang mở</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="retrieval-qa-form" class="qa-chat-inputbar">
+          <div class="qa-compose-row">
+            <textarea id="retrieval-qa-question" rows="1" placeholder="Nhắn cho Castle QA…" aria-label="Câu hỏi QA" required maxlength="1200"></textarea>
+            <button type="submit" id="retrieval-qa-submit" aria-label="Gửi câu hỏi" title="Gửi câu hỏi">Gửi <span aria-hidden="true">↑</span></button>
+          </div>
+          <div class="qa-compose-tools">
+            <details class="qa-search-options" id="qa-hint-row">
+              <summary>Tùy chọn tìm ảnh</summary>
+              <label for="retrieval-qa-query">Mô tả bổ sung bằng tiếng Anh <span>(không bắt buộc)</span></label>
+              <input type="text" id="retrieval-qa-query" placeholder="Ví dụ: a person wearing a red shirt" aria-label="Mô tả tìm kiếm tùy chọn" maxlength="1200" />
+            </details>
+            <span class="qa-compose-help">Enter để gửi · Shift + Enter xuống dòng</span>
+          </div>
+        </form>
+      </div>
+      <aside class="qa-retrieval-panel" aria-label="Ảnh truy xuất cho câu hỏi">
+        <header class="qa-retrieval-header"><div><h2>Ảnh truy xuất</h2><p id="qa-retrieval-summary" aria-live="polite">Ảnh liên quan sẽ xuất hiện khi bạn đặt câu hỏi.</p></div></header>
+        <p id="qa-retrieval-question" class="qa-retrieval-question" hidden></p>
+        <div id="qa-retrieval-grid" class="qa-retrieval-grid"></div>
+        <p id="qa-retrieval-empty" class="qa-retrieval-empty">Các ảnh được tìm để trả lời câu hỏi sẽ hiển thị ở đây. Chọn ảnh để xem lớn.</p>
+      </aside>
+      </section>
+
+      <p id="search-meta" role="status"></p>
+      <div id="search-results-heading" class="search-results-heading" hidden>
+        <h2>Ảnh tìm được</h2>
+        <span id="search-results-count"></span>
+      </div>
+      <div id="results-grid" class="grid"></div>
+    </section>
+  </main>
+
+  <div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-id" hidden>
+    <div class="lightbox-content">
+      <div id="lightbox-visual">
+        <img id="lightbox-img" alt="" />
+        <svg id="matched-overlay" viewBox="0 0 1280 720" aria-label="Vùng khớp câu truy vấn" hidden></svg>
+      </div>
+      <div class="lightbox-inspector">
+      <div class="lightbox-heading">
+        <p id="lightbox-id" class="lightbox-id"></p>
+        <button id="inspector-close" type="button" hidden>Đóng</button>
+      </div>
+      <div id="search-region-evidence" hidden></div>
+      <button id="matched-toggle" type="button" aria-pressed="false" hidden>Xem vùng khớp truy vấn</button>
+      <div id="matched-description" hidden></div>
+
+      <section id="lightbox-qa-section" class="lightbox-qa" hidden>
+        <div class="qa-section-header">
+          <h2 class="qa-section-title">Hỏi về ảnh này</h2>
+          <button type="button" id="lightbox-open-chat-btn" class="qa-link-btn">Mở trong khung Chat QA</button>
+        </div>
+        <form id="lightbox-qa-form" class="lightbox-qa-form">
+          <input
+            type="text"
+            id="lightbox-qa-input"
+            placeholder="Hỏi về ảnh đang chọn (ví dụ: Người đó đang cầm gì?)…"
+            aria-label="Câu hỏi cho ảnh này"
+            maxlength="1200"
+          />
+          <select id="lightbox-qa-lang" aria-label="Ngôn ngữ trả lời">
+            <option value="vi">Tiếng Việt</option>
+            <option value="en">English</option>
+          </select>
+          <button type="submit" id="lightbox-qa-btn">Hỏi</button>
+        </form>
+        <div id="lightbox-qa-result" class="qa-result-card" hidden>
+          <div class="qa-result-header">
+            <span id="lightbox-qa-status" class="qa-badge"></span>
+            <span id="lightbox-qa-meta" class="qa-meta"></span>
+          </div>
+          <p id="lightbox-qa-answer" class="qa-answer-text"></p>
+          <div id="lightbox-qa-evidence" class="qa-evidence-actions"></div>
+        </div>
+      </section>
+
+      <details class="competition-settings"><summary>Buổi thi (Run ID)</summary>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+        <label style="flex:1">Run ID / Evaluation ID
+          <input id="evaluation-id-input" type="text" placeholder="Dán mã Run ID hoặc đường dẫn Viewer từ DRES" style="width:100%;min-width:160px" />
+        </label>
+        <button id="apply-evaluation-id" type="button">Dùng mã này</button>
+      </div>
+      <p id="evaluation-message">Nhập Run ID khi muốn nộp ảnh vào cuộc thi.</p>
+      </details>
+      <div class="lightbox-actions">
+        <button id="submit-btn" disabled>Submit ảnh này</button>
+        <button id="close-lightbox-btn">Đóng</button>
+      </div>
+      <p id="submit-result"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="confirm-dialog" class="dialog" hidden>
+    <div class="dialog-content">
+      <p>Bạn chắc chắn muốn submit ảnh này lên DRES? Submit sai có thể bị trừ điểm.</p>
+      <button id="confirm-yes">Submit</button>
+      <button id="confirm-no">Huỷ</button>
+    </div>
+  </div>
+
+  <script src="/app.js?v=search-studio-2"></script>
+</body>
+</html>
