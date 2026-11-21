@@ -308,8 +308,9 @@ async def qa_progress(conversation_id: str, request: Request):
         return {"stage": "idle"}
     service.reasoning._clean()
     progress = service.reasoning.progress.get((_qa_owner(request, session), conversation_id), {})
-    return {"stage": progress.get("stage", "idle"), "request_id": progress.get("request_id"),
-            "image_ids": progress.get("image_ids", []), "examined_ids": progress.get("examined_ids", [])}
+    return {"stage": progress.get("stage", "idle"), "stages": progress.get("stages", []), "request_id": progress.get("request_id"),
+            "image_ids": progress.get("image_ids", []), "examined_ids": progress.get("examined_ids", []),
+            "plan": progress.get("plan"), "observations": progress.get("observations", [])}
 
 
 @app.post("/api/qa", response_model=QAResponse)

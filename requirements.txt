@@ -1,5 +1,6 @@
 numpy
 pillow
+transformers>=4.57.6,<5
 open_clip_torch
 torch
 faiss-cpu

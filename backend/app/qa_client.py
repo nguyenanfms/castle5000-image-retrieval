@@ -238,15 +238,24 @@ class OpenAICompatibleQAClient(BaseQAClient):
         evidence: list[EvidenceInput],
         deadline: float,
     ) -> ModelOutput:
+        return parse_and_validate_model_output(await self.structured(
+            build_qa_prompt(question, language, evidence), evidence, deadline))
+
+    async def structured(
+        self,
+        prompt: str,
+        evidence: list[EvidenceInput],
+        deadline: float,
+    ) -> dict[str, Any]:
         if not self.is_ready():
             raise QAUnavailableError("Chưa cấu hình QA_BASE_URL hoặc QA_MODEL")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise QATimeoutError()
 
-        prompt = build_qa_prompt(question, language, evidence)
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for item in evidence:
+            content.append({"type": "text", "text": f"Server image ID: {item.image_id}; evidence ID: {item.evidence_id}; view: {item.kind}"})
             b64 = base64.b64encode(item.image_bytes).decode("ascii")
             content.append(
                 {
@@ -264,12 +273,13 @@ class OpenAICompatibleQAClient(BaseQAClient):
         }
 
         try:
-            resp = await self._client.post(
-                "/chat/completions",
-                json=payload,
-                timeout=remaining,
-            )
-        except httpx.TimeoutException as exc:
+            async with asyncio.timeout(remaining):
+                resp = await self._client.post(
+                    "/chat/completions",
+                    json=payload,
+                    timeout=remaining,
+                )
+        except (httpx.TimeoutException, TimeoutError) as exc:
             raise QATimeoutError() from exc
         except httpx.RequestError as exc:
             raise QAUnavailableError(f"Không kết nối được dịch vụ suy luận QA: {exc}") from exc
@@ -287,7 +297,13 @@ class OpenAICompatibleQAClient(BaseQAClient):
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise QAInvalidOutputError("Phản hồi từ dịch vụ suy luận thiếu choices/message/content") from exc
 
-        return parse_and_validate_model_output(raw_content)
+        try:
+            data = json.loads(_strip_code_fence(raw_content)) if isinstance(raw_content, str) else raw_content
+        except (ValueError, TypeError) as exc:
+            raise QAInvalidOutputError("Đầu ra của mô hình không phải JSON hợp lệ") from exc
+        if not isinstance(data, dict):
+            raise QAInvalidOutputError("Đầu ra JSON của mô hình phải là một object")
+        return data
 
 
 class GeminiQAClient(BaseQAClient):
@@ -539,6 +555,13 @@ def create_qa_client(settings: Settings) -> BaseQAClient:
             api_key=settings.qa_api_key,
             model=settings.qa_model,
             base_url=settings.qa_base_url or "https://generativelanguage.googleapis.com/v1beta",
+            max_output_tokens=settings.qa_max_output_tokens,
+        )
+    if provider == "ollama":
+        return OpenAICompatibleQAClient(
+            base_url=settings.qa_ollama_base_url,
+            api_key="",
+            model=settings.qa_ollama_model,
             max_output_tokens=settings.qa_max_output_tokens,
         )
     return OpenAICompatibleQAClient(

@@ -1,0 +1,60 @@
+import time
+
+from app.ondemand_detector import OnDemandDetector
+from app.search_conditions import canonical_label
+
+
+def test_only_requested_images_and_labels_are_scanned_and_cached(tmp_path, monkeypatch):
+    for name in ('a.jpg', 'b.jpg', 'unused.jpg'):
+        (tmp_path / name).write_bytes(b'image')
+    detector = OnDemandDetector(tmp_path, tmp_path)
+    calls = []
+    def detect(path, label):
+        calls.append((path.name, label))
+        return [{'label': label, 'score': .9, 'box': [.1, .1, .5, .9]}]
+    monkeypatch.setattr(detector, '_detect', detect)
+    first = detector.detect_many(['a.jpg', 'b.jpg'], ['person'], time.monotonic() + 5)
+    second = detector.detect_many(['a.jpg'], ['person'], time.monotonic() + 5)
+    assert list(first) == ['a.jpg', 'b.jpg'] and list(second) == ['a.jpg']
+    assert calls == [('a.jpg', 'person'), ('b.jpg', 'person')]
+    assert detector.detect_many(['unused.jpg'], ['person'], time.monotonic() - 1) == {}
+    assert canonical_label('backpack') == 'backpack'
+
+
+def test_detector_failure_is_unchecked_not_an_empty_detection(tmp_path, monkeypatch):
+    (tmp_path / 'a.jpg').write_bytes(b'image')
+    detector = OnDemandDetector(tmp_path, tmp_path)
+    def fail(*args):
+        raise RuntimeError('model unavailable')
+    monkeypatch.setattr(detector, '_detect', fail)
+    assert detector.detect_many(['a.jpg'], ['person'], time.monotonic() + 5) == {}
+
+
+def test_kis_does_not_treat_unscanned_candidates_as_empty():
+    import asyncio
+    from types import SimpleNamespace
+    from app.search import SearchEngine
+    from app.schemas import SearchCondition
+    engine = SearchEngine.__new__(SearchEngine)
+    engine.settings = SimpleNamespace(search_candidate_k=3, search_region_threshold=.2,
+        search_region_weight=.25, detection_max_images=2, detection_timeout_s=5)
+    engine.region_index = None
+    engine.vector_index = SimpleNamespace(num_images=3, search_vector=lambda vec, k: [
+        {'id': 'a.jpg', 'score': .9}, {'id': 'b.jpg', 'score': .8}, {'id': 'c.jpg', 'score': .7}])
+    engine._cache_get = lambda key: None
+    engine._cache_put = lambda *args: None
+    async def encode(query):
+        return None
+    calls = []
+    async def detect(ids, labels, deadline):
+        calls.append((ids, labels))
+        return {'a.jpg': [{'label': 'person', 'score': .9, 'box': [.1, .1, .5, .9]}], 'b.jpg': []}
+    engine.encode_text = encode
+    engine.detect_candidates = detect
+    condition = SearchCondition(kind='at_least', subject='person', count=1)
+    results, _, _, _, checked = asyncio.run(engine.search_demo('kitchen', 3, [], 'clip_region', [condition]))
+    assert checked == 2 and calls == [(['a.jpg', 'b.jpg'], {'person'})]
+    states = {r['id']: r['conditions'][0]['reason'] for r in results}
+    assert states['a.jpg'] == 'minimum_observed'
+    assert states['b.jpg'] == 'count_unconfirmed'
+    assert states['c.jpg'] == 'detector_unavailable'

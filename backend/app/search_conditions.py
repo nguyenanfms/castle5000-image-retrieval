@@ -2,6 +2,7 @@
 
 import json
 import math
+import re
 from pathlib import Path
 
 from .regions import iou
@@ -22,7 +23,11 @@ def canonical_label(text):
         return ALIASES[label]
     if label in DETECTOR_LABELS:
         return label
-    return label.removesuffix("s") if label.removesuffix("s") in DETECTOR_LABELS else None
+    if label.removesuffix("s") in DETECTOR_LABELS:
+        return label.removesuffix("s")
+    # Grounding DINO accepts open-vocabulary English phrases, not only the
+    # classes covered by the old offline detections file.
+    return label if re.fullmatch(r"[a-z][a-z -]{0,59}", label) else None
 
 
 def valid_detection(row):

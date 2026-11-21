@@ -274,6 +274,7 @@ class QAEvidenceItem(BaseModel):
     timestamp: str | None = None
     box: list[float] | None = None
     regions: list[QARegion] = Field(default_factory=list)
+    unverified_proposals: list[QARegion] = Field(default_factory=list)
     source: QAEVidenceSource = "image"
 
     @field_validator("box")
@@ -307,6 +308,8 @@ class QAResponse(BaseModel):
     operation: str | None = None
     examined_scope: dict = Field(default_factory=dict)
     claims: list[QAClaim] = Field(default_factory=list)
+    identity_match_candidates: list[dict] = Field(default_factory=list)
+    distinct_estimate: dict | None = None
     rounds: int = 0
     api_calls: int = 0
     status: QAStatus

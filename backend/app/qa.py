@@ -314,7 +314,8 @@ class QAService:
 
     async def answer(self, req: QARequest, access_scope: str = "participant") -> QAResponse:
         t0 = time.perf_counter()
-        deadline = time.monotonic() + min(float(self.settings.qa_request_timeout_s), 60.0) if req.mode == "auto" else time.monotonic() + float(self.settings.qa_request_timeout_s)
+        timeout = float(self.settings.qa_auto_timeout_s if req.mode == "auto" else self.settings.qa_request_timeout_s)
+        deadline = time.monotonic() + timeout
         request_id = str(uuid.uuid4())
 
         if not self.settings.qa_enabled or not self.client.is_ready():

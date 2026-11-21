@@ -29,7 +29,8 @@ torch.set_num_threads(1)
 from .config import Settings
 from .regions import RegionIndex
 from .regionclip import RegionClipIndex
-from .search_conditions import load_detections, positive_checks, rank_checked_shortlist
+from .search_conditions import canonical_label, positive_checks, rank_checked_shortlist
+from .ondemand_detector import OnDemandDetector
 
 
 class IndexNotBuiltError(RuntimeError):
@@ -99,13 +100,7 @@ class SearchEngine:
         self._semaphore = asyncio.Semaphore(settings.encode_concurrency)
         self.vector_index = VectorIndex.load(settings.index_path, settings.ids_path)
         self.condition_detections, self.condition_detector_version = {}, None
-        if settings.search_detections_path.is_file():
-            try:
-                self.condition_detections, self.condition_detector_version = load_detections(
-                    settings.search_detections_path, self.vector_index.ids,
-                )
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                logging.getLogger('retrieval').warning('Search detections unavailable: %s', exc)
+        self.detector = OnDemandDetector(settings.images_dir, settings.detection_model_dir)
         self.region_index = None
         self.region_notice = 'Chỉ mục vùng chưa sẵn sàng; điều kiện chi tiết dùng toàn ảnh làm dự phòng.'
         try:
@@ -141,7 +136,7 @@ class SearchEngine:
     def _load_model(self) -> None:
         s = self.settings
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
-        self.model, _, _ = open_clip.create_model_and_transforms(
+        self.model, _, self._image_preprocess = open_clip.create_model_and_transforms(
             s.embed_model_name, pretrained=s.embed_pretrained, device=self.device
         )
         self.model.eval()
@@ -164,6 +159,23 @@ class SearchEngine:
     async def encode_text(self, query: str) -> np.ndarray:
         async with self._semaphore:
             return await asyncio.to_thread(self._encode_text_sync, query)
+
+    def _encode_image_crops_sync(self, crops):
+        vectors = []
+        for start in range(0, len(crops), 16):
+            batch = torch.stack([self._image_preprocess(image) for image in crops[start:start + 16]]).to(self.device)
+            with torch.no_grad():
+                features = self.model.encode_image(batch)
+                features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            vectors.append(features.cpu().numpy().astype('float32'))
+        return np.concatenate(vectors) if vectors else np.empty((0, 0), dtype='float32')
+
+    async def encode_image_crops(self, crops):
+        async with self._semaphore:
+            return await asyncio.to_thread(self._encode_image_crops_sync, crops)
+
+    async def detect_candidates(self, image_ids, labels, deadline):
+        return await asyncio.to_thread(self.detector.detect_many, image_ids, labels, deadline)
 
     def _cache_get(self, key: tuple) -> tuple[list[dict], int | None] | None:
         with self._cache_lock:
@@ -199,7 +211,7 @@ class SearchEngine:
         threshold = self.settings.search_region_threshold
         weight = self.settings.search_region_weight
         version = index.version if index else None
-        detector_version = self.condition_detector_version if conditions else None
+        detector_version = 'grounding-dino-on-demand-v1' if conditions else None
         actual_mode = 'clip_region' if mode == 'clip_region' and (conditions or (details and index)) else 'clip'
         key = ('demo', query, k, tuple(details), conditions, mode, version, detector_version,
                candidate_k, threshold, weight)
@@ -211,10 +223,17 @@ class SearchEngine:
         checked = None
         if actual_mode == 'clip_region' and conditions:
             baseline = self.vector_index.search_vector(await self.encode_text(query), self.num_images)
+            labels = {canonical_label(value) for c in conditions
+                      if c.kind not in {'action', 'other'} for value in (c.subject, c.target) if value}
+            labels.discard(None)
+            limit = min(len(baseline), self.settings.detection_max_images)
+            detections = await self.detect_candidates([row['id'] for row in baseline[:limit]], labels,
+                time.monotonic() + self.settings.detection_timeout_s) if labels else {}
             ranked, checked = await asyncio.to_thread(
                 rank_checked_shortlist, index, baseline, details, conditions, candidate_k, threshold, weight,
-                self.condition_detections, target_k=k,
+                detections, target_k=k,
             )
+            checked = len(detections)
         elif actual_mode == 'clip_region':
             ranked = await self._retrieve_shortlist(index, query, k, details, candidate_k, threshold, weight)
             checked = candidate_k
@@ -227,7 +246,9 @@ class SearchEngine:
             results.append({**row, 'final_rank': rank, 'clip_rank': row.get('clip_rank', rank),
                             'region_evaluated': row.get('region_evaluated', False),
                             'matches': matches, 'conditions': checks})
-        self._cache_put(key, (results, checked))
+        # An interrupted scan must be retried, not cached as complete.
+        if not (actual_mode == 'clip_region' and conditions and labels and checked < limit):
+            self._cache_put(key, (results, checked))
         return results, int((time.perf_counter() - started) * 1000), actual_mode, version, checked
 
     async def search(self, query: str, k: int, detail_queries: list[str] | None = None) -> tuple[list[dict], int]:

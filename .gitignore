@@ -50,6 +50,7 @@ output/
 !/backend/tests/__init__.py
 !/backend/tests/test_qa_reasoning_sync.py
 !/backend/tests/test_qa_aggregation_store.py
+!/backend/tests/test_evidence_overlay.js
 /pytest.ini
 /requirements-regions.txt
 /tools/*

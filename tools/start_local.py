@@ -21,7 +21,7 @@ DATA = ROOT / "runtime-data"
 ARCHIVES = ("castle5000-media.zip", "castle5000-indexes.zip")
 WEIGHTS = RUNTIME / "open_clip_model.safetensors"
 INDEX_FILES = {
-    "ids.json", "index.faiss", "search-detections.json", "regions/index.faiss",
+    "ids.json", "index.faiss", "regions/index.faiss",
     "regions/manifest.json", "regions/regions.json", "regions/text_encoder.onnx",
     "regions/text_parity.json", "regions/tokenizer_bpe.txt.gz",
 }
@@ -45,12 +45,15 @@ def prepare_data():
             if archive_path.name == ARCHIVES[0]:
                 if len(names) != 10000 or not all(MEDIA_PATH.fullmatch(name) for name in names):
                     raise ValueError("The media bundle must contain 5,000 photos and 5,000 thumbnails")
-            elif names != INDEX_FILES:
+            elif names not in (INDEX_FILES, INDEX_FILES | {"search-detections.json"}):
                 raise ValueError("Index bundle contents do not match the release")
             digest = json.dumps({member.filename: member.CRC for member in members}, sort_keys=True)
             marker = DATA / f".{archive_path.stem}.json"
             reusable = marker.is_file() and marker.read_text(encoding="utf-8") == digest
             for member in members:
+                # Historical offline detections are not used or extracted.
+                if member.filename == "search-detections.json":
+                    continue
                 target = DATA.joinpath(*PurePosixPath(member.filename).parts)
                 if reusable and target.is_file() and target.stat().st_size == member.file_size:
                     continue
@@ -125,7 +128,6 @@ def run(args):
         IMAGES_DIR=str(DATA / "images"), THUMBS_DIR=str(DATA / "thumbs"),
         INDEX_PATH=str(DATA / "index.faiss"), IDS_PATH=str(DATA / "ids.json"),
         REGION_INDEX_DIR=str(DATA / "regions"), SEARCH_REGION_THRESHOLD="0.21761782467365265",
-        SEARCH_DETECTIONS_PATH=str(DATA / "search-detections.json"),
         EMBED_MODEL_NAME="ViT-B-32", EMBED_PRETRAINED=str(WEIGHTS),
         OMP_NUM_THREADS="1", SESSION_COOKIE_SECURE="false",
         SESSION_COOKIE_NAME=f"castle5000_{args.port}",

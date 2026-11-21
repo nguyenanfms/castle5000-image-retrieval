@@ -16,11 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .qa_client import QAClientError, QAInvalidOutputError, QATimeoutError, QATruncatedOutputError
 from .qa_aggregation import AggregationStep, aggregate_observations
-from .qa_people import ReviewedPeople, person_shortlist
+from .qa_people import ReviewedPeople, estimate_distinct_people, prepare_object_crops
 from .qa_store import EvidenceStore
 from .regions import iou
 from .schemas import QAClaim, QAEvidenceItem, QARegion, QAResponse
-from .search_conditions import DETECTION_SCORE, canonical_label, distinct_detections
+from .search_conditions import DETECTION_SCORE, canonical_label, distinct_detections, same_detection
 
 log = logging.getLogger('retrieval.qa.reasoning')
 
@@ -34,7 +34,7 @@ class Plan(StrictModel):
     question_type: Literal['single_image', 'scene_search', 'multi_image', 'temporal']
     context_source: Literal['new_search', 'previous_evidence'] = 'new_search'
     subject: str = Field(max_length=500)
-    operation: Literal['describe', 'find', 'count_visible', 'count_max', 'compare', 'count_distinct_people',
+    operation: Literal['describe', 'find', 'count_visible', 'count_max', 'compare', 'count_distinct_people', 'count_distinct_objects',
                        'count_events', 'temporal_relation'] = 'describe'
     answer_scope: Literal['scene', 'per_image', 'comparison', 'corpus'] = 'scene'
     known_conditions: list[str] = Field(default_factory=list, max_length=10)
@@ -43,6 +43,47 @@ class Plan(StrictModel):
     detail_queries: list[str] = Field(default_factory=list, max_length=3)
     processing_steps: list[AggregationStep] = Field(default_factory=list, max_length=6)
     clarification: str | None = None
+
+
+def uses_detector_regions(plan):
+    return bool(plan and (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
+                          or any(step.field == 'visible_count' for step in plan.processing_steps)))
+
+
+def prefer_distinct_scope(plan: Plan, request) -> bool:
+    """Honor total-object questions unless the user specifies an image or appearances."""
+    question = request.question.casefold()
+    if request.image_id:
+        return False
+    if plan.operation not in {'count_visible', 'describe', 'count_distinct_people', 'count_distinct_objects'}:
+        return False
+    if not re.search(r'\b(?:tổng(?:\s+cộng|\s+số)?|tất\s+cả|khác\s+nhau|total|distinct|unique)\b', question):
+        return False
+    if re.search(r'\b(?:số\s+lần|bao\s+nhiêu\s+lần|lượt\s+xuất\s+hiện|occurrences|appearances|how\s+many\s+times)\b', question):
+        return False
+    if re.search(r'\b(?:(?:trong|ở|của)\s+(?:bức\s+)?(?:ảnh|hình)(?:\s+(?:này|đó|nào))?|this\s+(?:image|picture|photo)|in\s+(?:the|a)\s+(?:image|picture|photo))\b', question):
+        return False
+    if re.search(r'\b(?:bao\s+nhiêu|tổng\s+số|how\s+many|number\s+of)\s+(?:các\s+)?(?:ảnh|hình|images|pictures|photos)\b', question):
+        return False
+    if plan.context_source == 'previous_evidence' and re.search(
+            r'\b(?:(?:các|những)\s+(?:ảnh|hình)\s+(?:đó|trên|trước|vừa)|(?:ảnh|hình)\s+(?:trước|vừa\s+rồi)|those\s+(?:images|pictures|photos)|previous\s+(?:images|pictures|photos))\b', question):
+        return False
+    return bool(plan.subject.strip())
+
+
+def apply_distinct_scope(plan: Plan, request) -> Plan:
+    if prefer_distinct_scope(plan, request):
+        subject = canonical_label(plan.subject)
+        if subject == 'person' or re.search(r'\b(?:người|people|persons?|participants?)\b', plan.subject, re.I):
+            plan.operation = 'count_distinct_people'
+            plan.subject = 'person'
+        else:
+            plan.operation = 'count_distinct_objects'
+        plan.answer_scope = 'corpus'
+        plan.question_type = 'multi_image'
+        plan.context_source = 'new_search'
+        plan.clarification = None
+    return plan
 
 
 class ConditionCheck(StrictModel):
@@ -220,8 +261,11 @@ class ReasoningQA:
 
     def stage(self, owner, cid, name, rid):
         previous = self.progress.get((owner, cid), {})
-        images = {k: previous[k] for k in ('image_ids', 'examined_ids') if k in previous} if previous.get('request_id') == rid else {}
-        self.progress[owner, cid] = dict(stage=name, request_id=rid, expires=time.monotonic()+1800, **images)
+        images = {k: previous[k] for k in ('image_ids', 'examined_ids', 'plan', 'observations') if k in previous} if previous.get('request_id') == rid else {}
+        history = list(previous.get('stages', [])) if previous.get('request_id') == rid else []
+        if not history or history[-1] != name:
+            history.append(name)
+        self.progress[owner, cid] = dict(stage=name, stages=history[-100:], request_id=rid, expires=time.monotonic()+1800, **images)
         log.info('qa_stage request_id=%s stage=%s', rid, name)
 
     async def answer(self, req, owner, rid, deadline, versions):
@@ -229,6 +273,10 @@ class ReasoningQA:
         cid = req.conversation_id or uuid.uuid4().hex
         history = self.conversations.get((owner, cid), (0, []))[1]
         start = time.perf_counter()
+        # Leave time for verification and CLIP crop embeddings after detection.
+        initial_budget = max(0.0, deadline - time.monotonic())
+        distinct_reserve_s = min(75.0, initial_budget * .45)
+        embedding_reserve_s = min(35.0, initial_budget * .20)
         cache_versions = {**versions.model_dump(),
                           'policy': getattr(self.service.settings, 'qa_policy_version', ''),
                           'reasoning': 'evidence-v2'}
@@ -260,11 +308,13 @@ class ReasoningQA:
         reviewed_max = None
         rejected_count_ids = set()
         invalid_observation_ids = set()
+        observation_budget_exhausted = False
         scope_ids = []
         indexed_count = 0
         people_candidate_count = 0
         review_attempted = set()
         region_candidates = {}
+        qa_detections = {}
         output_regions = {}
         verification_records = []
         aggregation_results = []
@@ -296,7 +346,15 @@ class ReasoningQA:
                 retry_task = {**task, 'validation_errors': issues} if attempt else task
                 prompt = protocol + retry_prefix + "\n" + json.dumps(retry_task, ensure_ascii=False)
                 try:
-                    raw = await self.service.client.structured(prompt, list(images), deadline)
+                    is_distinct = plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'}
+                    reserve = (distinct_reserve_s if stage == 'observing' and is_distinct else
+                               embedding_reserve_s if stage == 'verifying' and is_distinct else 0.0)
+                    raw = await self.service.client.structured(prompt, list(images), deadline - reserve)
+                    if (stage == 'observing' and uses_detector_regions(plan) and
+                            isinstance(raw, dict) and isinstance(raw.get('observations'), list)):
+                        raw = {**raw, 'observations': [
+                            {**row, 'regions': [], 'count_visibility': 'unknown'} if isinstance(row, dict) else row
+                            for row in raw['observations']]}
                     try:
                         result = schema.model_validate(raw)
                     except ValidationError as original_error:
@@ -334,10 +392,10 @@ class ReasoningQA:
 
         def detection_hints(image_id):
             label = 'person' if plan.operation == 'count_distinct_people' else canonical_label(plan.subject)
-            if not label or (plan.operation not in {'count_visible', 'count_max', 'count_distinct_people'}
+            if not label or (plan.operation not in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
                              and not any(s.field == 'visible_count' for s in plan.processing_steps)):
                 return []
-            rows = getattr(self.service.search_engine, 'condition_detections', {}).get(image_id, ())
+            rows = qa_detections.get(image_id, ())
             return [row['box'] for row in distinct_detections([
                 row for row in rows if row['label'] == label and row['score'] >= DETECTION_SCORE
             ])[:40]]
@@ -359,13 +417,16 @@ class ReasoningQA:
                     'unless it explains uncertainty. Return a status for every numbered condition. Joint '
                     'conditions must apply to the same named subject/object. An open door does not prove '
                     'who opened it. Use unclear when a condition cannot be seen. Only for count_visible '
-                    'or count_max or count_distinct_people, or when needs_visible_count is true, output one box per clearly visible target with a short '
+                    'or count_max or count_distinct_people or count_distinct_objects, or when needs_visible_count is true, output one box per clearly visible target with a short '
                     'label like P1 and box=[x1,y1,x2,y2] as exactly four numeric coordinates '
                     'from 0 to 1 rounded to at most three decimals; x1<x2 and y1<y2. '
                     'Do not return points, polygons, pixel coordinates or nested arrays. '
                     'Check proposals for false positives and missed instances. Use count_visibility=complete '
                     'for a supported visible count, partial for an incomplete count, and unknown when '
                     'no reliable count is possible. Only for temporal questions use state and subject_key. '
+                    + ('For this distinct-object task do not return regions or a count; '
+                       'the server supplies Grounding DINO proposals separately. '
+                       if uses_detector_regions(plan) else '')
                     + ('Use the crops to recheck unclear details. All boxes are relative to the full image.' if zoom else '')
                 )), images)
             if {o.image_id for o in result.observations} != set(batch_ids) or len(result.observations) != len(batch_ids):
@@ -385,12 +446,23 @@ class ReasoningQA:
                     if all(iou(region.box, other.box) < .7 for other in regions):
                         regions.append(region)
                 item.regions = regions
+                if uses_detector_regions(plan):
+                    category = 'person' if plan.operation == 'count_distinct_people' else plan.subject
+                    rows = distinct_detections([row for row in qa_detections.get(item.image_id, ())
+                        if row['label'] == canonical_label(category) and row['score'] >= DETECTION_SCORE])
+                    item.regions = [QARegion(label=f'D{i+1}', box=row['box']) for i, row in enumerate(rows[:40])]
+                    # Proposals are not verified counts, even when Gemini claims completeness.
+                    item.count_visibility = 'partial' if item.regions else 'unknown'
             return result.observations
 
         async def record_observations(images):
-            nonlocal partial
+            nonlocal partial, observation_budget_exhausted
             try:
                 result = await observe(images)
+            except QATimeoutError:
+                partial = True
+                observation_budget_exhausted = True
+                return
             except (QATruncatedOutputError, QAInvalidOutputError) as exc:
                 if len(images) == 1:
                     partial = True
@@ -403,10 +475,11 @@ class ReasoningQA:
                 return
             observations.extend(result)
             self.progress[owner, cid]['examined_ids'] = [o.image_id for o in observations]
+            self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
 
         async def run():
             nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count
-            nonlocal scope_ids, people_candidate_count, corpus_aggregate
+            nonlocal scope_ids, people_candidate_count, corpus_aggregate, observation_budget_exhausted
             plan = await invoke('planning', Plan, dict(question=req.question, language=req.answer_language,
                 history=history, selected_image=req.image_id, scope=req.scope.model_dump() if req.scope else None,
                 verified_sequence_available=bool(self.catalog.records),
@@ -416,10 +489,15 @@ class ReasoningQA:
                     'answer operation from scene conditions: how many people when a person opens a '
                     'fridge is count_visible, not count_events. Only event frequency is count_events; '
                     'before/after/duration is temporal_relation. A visible object count is scene or '
-                    'per_image. A total participant count with no particular scene asks for '
-                    'count_distinct_people in the corpus '
+                    'per_image. If the question asks for the total number of distinct people '
+                    'without identifying a specific image, use count_distinct_people with corpus scope, '
+                    'including short questions such as a general total number of people. '
+                    'When a specific image is selected or the question explicitly asks about one image, '
+                    'use count_visible for that image. '
+                    'For distinct physical objects of another requested category across images use '
+                    'count_distinct_objects and set subject to the canonical object category. '
                     'For the maximum number of visible objects in any image, use count_max and corpus scope. '
-                    'unless the question refers to previous evidence. Interpret '
+                    'Interpret '
                     'participants as visible people when counting appearances; do not invent off-camera '
                     'people or assume a filename identifies a video. Clarify ambiguous scope, especially '
                     'a reference to a particular video whose image IDs were not supplied. Use short '
@@ -431,6 +509,13 @@ class ReasoningQA:
                     'per-image observations: count counts image records; visible_count is only available '
                     'for complete visual counts. aggregate sums visible appearances, never unique people.'
                 )))
+            plan = apply_distinct_scope(plan, req)
+            self.progress[owner, cid]['plan'] = {
+                'question': plan.question, 'subject': plan.subject, 'operation': plan.operation,
+                'answer_scope': plan.answer_scope, 'known_conditions': plan.known_conditions,
+                'information_needed': plan.information_needed, 'queries': plan.queries,
+                'clarification': plan.clarification,
+            }
             if plan.clarification:
                 reason, message = 'missing_context', plan.clarification
                 return
@@ -441,6 +526,7 @@ class ReasoningQA:
                 return
             if re.search(r'(?:mấy|bao nhiêu)\s+lần|how many times', req.question, re.I):
                 plan.operation = 'count_events'
+                self.progress[owner, cid]['plan']['operation'] = plan.operation
             if plan.operation == 'count_events':
                 plan.question_type = 'temporal'
             elif plan.operation == 'temporal_relation':
@@ -459,7 +545,7 @@ class ReasoningQA:
                 reason = 'missing_context'
                 message = 'Bạn muốn hỏi trên ảnh nào? Hãy chọn ảnh hoặc mô tả cảnh cần hỏi.' if req.answer_language == 'vi' else 'Which image do you mean? Select an image or describe the scene.'
                 return
-            distinct_people = plan.operation == 'count_distinct_people'
+            distinct_people = plan.operation in {'count_distinct_people', 'count_distinct_objects'}
             corpus_scan = distinct_people or plan.answer_scope == 'corpus'
             corpus_aggregate = corpus_scan and not distinct_people and plan.operation != 'count_max' and bool(plan.processing_steps)
             scope_candidates = []
@@ -472,7 +558,7 @@ class ReasoningQA:
                     reason = 'missing_context'
                     message = ('Không xác định được tập ảnh cần rà soát.' if vi else 'The requested image scope could not be resolved.')
                     return
-                if distinct_people and self.people and not plan.known_conditions:
+                if plan.operation == 'count_distinct_people' and self.people and not plan.known_conditions:
                     exact_people = self.people.tally(scope_ids, vi=vi)
                     if exact_people is not None:
                         output_regions.update(exact_people[2])
@@ -490,12 +576,6 @@ class ReasoningQA:
                     reviewed_max = (maximum, winners)
                     output_regions.update({image_id: self.people.images[image_id] for image_id in winners})
                     return
-                if distinct_people:
-                    detections = getattr(engine, 'condition_detections', {})
-                    scope_candidates, indexed_count = await asyncio.to_thread(person_shortlist, scope_ids, detections)
-                    people_candidate_count = len(scope_candidates)
-                    # Sample likely crowded frames plus visually diverse alternatives for review.
-                    scope_candidates = scope_candidates[:60]
                 if not distinct_people and plan.operation != 'count_max' and not corpus_aggregate:
                     reason = 'unsupported_corpus_operation'
                     message = ('Chưa thể xác minh đầy đủ phép tổng hợp trên toàn bộ tập ảnh.' if vi
@@ -504,10 +584,11 @@ class ReasoningQA:
                     return
             queries = [req.retrieval_query] if req.retrieval_query else plan.queries
             if distinct_people and not queries:
-                queries = ['people visible together in a scene']
+                queries = [f'{plan.subject} visible in a scene']
             corpus_limit = max(1, min(int(self.service.settings.qa_corpus_max_images), 1000))
-            max_rounds = ((min(len(scope_ids), corpus_limit) + 7) // 8
-                          if corpus_scan and not distinct_people else 3)
+            distinct_top_k = max(1, min(int(getattr(self.service.settings, 'qa_distinct_top_k', 10)), 100))
+            max_rounds = ((min(len(scope_ids), corpus_limit) + 7) // 8 if corpus_scan and not distinct_people
+                          else (distinct_top_k + 7) // 8 if distinct_people else 3)
             for round_index in range(max_rounds):
                 rounds = round_index+1
                 self.stage(owner, cid, 'retrieving', rid)
@@ -527,23 +608,21 @@ class ReasoningQA:
                             break
                         detail = [x[:180] for x in plan.detail_queries if x.strip()]
                         if detail and getattr(self.service.search_engine, 'region_index', None):
-                            found, _ = await self.service.search_engine.search(query[:1200], 20, detail)
+                            found, _ = await self.service.search_engine.search(query[:1200], distinct_top_k if distinct_people else 20, detail)
                         else:
-                            found, _ = await self.service.search_engine.search(query[:1200], 20)
+                            found, _ = await self.service.search_engine.search(query[:1200], distinct_top_k if distinct_people else 20)
                         for row in found:
                             boxes = [match for match in row.get('matches', [])
                                      if match.get('box') and match.get('supported', True)]
                             if boxes:
                                 region_candidates.setdefault(row['id'], []).extend(boxes)
                         ranked.append([x['id'] for x in found if self.service.search_engine.has_id(x['id']) and self.catalog.allowed(x['id'], req.scope)])
-                    if distinct_people:
-                        if previous_ids:
-                            ranked.append(scope_ids)
-                        shortlist = [x for x in scope_candidates if x not in seen][:20]
-                        if shortlist:
-                            ranked.insert(0, shortlist)
+                    if distinct_people and previous_ids:
+                        ranked.append(scope_ids)
                     # Round-robin across query rankings preserves alternative contexts.
-                    candidates = list(dict.fromkeys(x for i in range(20) for rank in ranked for x in rank[i:i+1]))
+                    candidates = (list(dict.fromkeys(x for rank in ranked for x in rank))[:distinct_top_k]
+                                  if distinct_people else
+                                  list(dict.fromkeys(x for i in range(20) for rank in ranked for x in rank[i:i+1])))
                     searched.update(candidates)
                     if plan.question_type == 'temporal':
                         candidates = list(dict.fromkeys(self.catalog.neighbors(candidates[:4], req.scope)+candidates))
@@ -551,7 +630,7 @@ class ReasoningQA:
                 self.progress[owner, cid]['image_ids'] = list(retrieved)
                 candidates = [x for x in candidates if x not in seen]
                 # Greedy visual diversity using existing index vectors; never deduplicate temporal neighbors.
-                if plan.question_type != 'temporal' and not (corpus_scan and not distinct_people):
+                if plan.question_type != 'temporal' and not corpus_scan:
                     vectors = getattr(self.service.search_engine, '_global_vectors', None)
                     ids = getattr(getattr(self.service.search_engine, 'vector_index', None), 'ids', [])
                     positions = {x:i for i,x in enumerate(ids)}
@@ -566,7 +645,7 @@ class ReasoningQA:
                         else:
                             chosen.append(x)
                     candidates = chosen + deferred
-                image_limit = corpus_limit if corpus_scan and not distinct_people else 24
+                image_limit = corpus_limit if corpus_scan and not distinct_people else distinct_top_k if distinct_people else 24
                 candidates = candidates[:min(8, max(0, image_limit-len(seen)))]
                 zoom_targets = [o for o in observations if (
                     o.context_match == 'unclear' or (o.context_match == 'yes' and o.count_visibility == 'partial')
@@ -576,12 +655,22 @@ class ReasoningQA:
                         reason = 'no_relevant_image'
                         message = 'Chưa tìm được ảnh phù hợp với câu hỏi. Bạn có thể chọn một ảnh để hỏi trực tiếp.' if req.answer_language == 'vi' else 'No matching image found. Select an image to ask directly.'
                     break
-                counting = (plan.operation in {'count_visible', 'count_max', 'count_distinct_people'}
+                counting = (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
                             or any(s.field == 'visible_count' for s in plan.processing_steps))
                 batch_size = 2 if counting else 4
                 for offset in range(0, len(candidates), batch_size):
+                    if distinct_people and deadline - time.monotonic() <= distinct_reserve_s:
+                        partial = True
+                        observation_budget_exhausted = True
+                        break
                     images = []
                     batch_ids = candidates[offset:offset+batch_size]
+                    if counting and hasattr(self.service.search_engine, 'detect_candidates'):
+                        label = 'person' if plan.operation == 'count_distinct_people' else canonical_label(plan.subject)
+                        if label:
+                            detect_deadline = min(deadline - (distinct_reserve_s if distinct_people else 2),
+                                time.monotonic() + getattr(self.service.settings, 'detection_timeout_s', 45))
+                            qa_detections.update(await self.service.search_engine.detect_candidates(batch_ids, [label], detect_deadline))
                     for image_id in batch_ids:
                         bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
                             image_id, plan.question, image_id, None, False)
@@ -589,6 +678,8 @@ class ReasoningQA:
                         images.append(bundle.items[0])
                         seen.add(image_id)
                     await record_observations(images)
+                    if observation_budget_exhausted:
+                        break
                 for old in zoom_targets:
                     review_attempted.add(old.image_id)
                     bundle = await asyncio.to_thread(
@@ -600,7 +691,11 @@ class ReasoningQA:
                         except QATruncatedOutputError:
                             continue
                         observations[observations.index(old)] = new
+                        self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
                         rejected_count_ids.discard(old.image_id)
+                if (distinct_people and not observation_budget_exhausted and not req.image_id
+                        and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds):
+                    continue
                 if plan.operation == 'count_max' or corpus_aggregate:
                     checked = {o.image_id for o in observations}
                     if set(scope_ids) - checked:
@@ -664,7 +759,7 @@ class ReasoningQA:
                         message = 'Chưa quan sát được chuyển trạng thái đủ rõ; không thể kết luận số lần bằng 0.' if req.answer_language == 'vi' else 'No verified transition; cannot conclude zero occurrences.'
                         queries = plan.queries
                         continue
-                elif plan.operation in {'count_visible', 'count_distinct_people'} and not corpus_aggregate:
+                elif plan.operation in {'count_visible', 'count_distinct_people', 'count_distinct_objects'} and not corpus_aggregate:
                     usable = [o for o in observations if o.image_id not in rejected_count_ids
                               and o.context_match == 'yes' and (
                         o.count_visibility == 'complete' or
@@ -688,8 +783,9 @@ class ReasoningQA:
                             n = len(item.regions)
                             minimum = distinct_people or item.count_visibility == 'partial'
                             if distinct_people:
-                                label = (f'Ít nhất {n} người khác nhau cùng xuất hiện trong ảnh {item.image_id}.' if vi
-                                         else f'At least {n} distinct people appear together in {item.image_id}.')
+                                noun = 'người' if plan.operation == 'count_distinct_people' else plan.subject
+                                label = (f'Ít nhất {n} {noun} khác nhau cùng xuất hiện trong ảnh {item.image_id}.' if vi
+                                         else f'At least {n} distinct {noun} instances appear together in {item.image_id}.')
                             elif vi:
                                 count = f'ít nhất {n}' if minimum else str(n)
                                 noun = 'người' if canonical_label(plan.subject) == 'person' else 'đối tượng được hỏi'
@@ -704,6 +800,10 @@ class ReasoningQA:
                                        else ' See the evidence for counts in the other images.')
                         draft = Draft(status='answered', answer=answer, claims=summaries)
                     else:
+                        if not qa_detections:
+                            reason = 'detector_unavailable'
+                            message = ('Chưa dò được đối tượng trên các ảnh đã tìm; kiểm tra mô hình hoặc thời gian xử lý.' if vi
+                                       else 'Object detection did not complete for the retrieved images; check the model or time budget.')
                         draft = Draft(status='insufficient_evidence', queries=plan.queries)
                 elif plan.operation != 'count_max':
                     matching = [o for o in observations if o.context_match == 'yes']
@@ -773,9 +873,11 @@ class ReasoningQA:
                             if distinct_people:
                                 draft.answer += (' Chưa đủ căn cứ để chốt tổng số trên toàn phạm vi.' if vi
                                                  else ' The total across the requested scope is unconfirmed.')
+                        if distinct_people and not observation_budget_exhausted and not req.image_id and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds:
+                            continue
                         return
                     reason = 'conflicting_evidence' if conflicts else 'verification_failed'
-                    if plan.operation in {'count_visible', 'count_max', 'count_distinct_people'}:
+                    if plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}:
                         rejected_count_ids.update(source_ids)
                     message = 'Các ảnh chưa đủ nhất quán để chốt câu trả lời.' if req.answer_language == 'vi' else 'Evidence does not consistently support a final answer.'
                     draft = None
@@ -845,6 +947,9 @@ class ReasoningQA:
                                     else f'Image {image_id} has {maximum} reviewed people.'),
                               evidence_ids=[image_id]) for image_id in winners]
         cited = list(dict.fromkeys(x for c in claims for x in c.evidence_ids))
+        distinct_observation = bool(plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None)
+        if distinct_observation:
+            cited = list(dict.fromkeys(cited + [o.image_id for o in observations if o.context_match == 'yes']))
         related_only = not accepted and reason in {'unverified_sequence', 'conflicting_evidence', 'verification_failed'}
         if related_only:
             cited = [o.image_id for o in observations if o.context_match == 'yes']
@@ -853,9 +958,15 @@ class ReasoningQA:
             cited = [x for x in history[-1]['image_ids'] if self.service.search_engine.has_id(x)]
             related_only = True
         items = []
+        verified_observation_ids = {image_id for check in verification_records
+                                    if check['supported'] and not check['conflicts'] and not check['missing']
+                                    for image_id in check['image_ids']}
         for image_id in cited:
             row = self.catalog.records.get(image_id)
             caption = ' '.join(c.text for c in claims if image_id in c.evidence_ids)
+            if distinct_observation and not caption:
+                caption = ('Vùng Grounding DINO phát hiện; cần đối chiếu.' if vi
+                           else 'Grounding DINO detections; review required.')
             if related_only:
                 observation = observation_by_id.get(image_id)
                 if observation:
@@ -863,11 +974,25 @@ class ReasoningQA:
                     caption = prefix + observation.observation
                 else:
                     caption = 'Ảnh trong câu hỏi trước' if req.answer_language == 'vi' else 'Image from the previous question'
+            proposals = []
+            if distinct_observation and image_id in observation_by_id:
+                label = 'person' if plan.operation == 'count_distinct_people' else canonical_label(plan.subject)
+                detections = qa_detections.get(image_id, ())
+                for detection in distinct_detections([d for d in detections
+                    if d.get('label') == label and d.get('score', 0) >= DETECTION_SCORE]):
+                    if not any(same_detection(detection['box'], region.box) for region in observation_by_id[image_id].regions):
+                        proposals.append(QARegion(label=f'D{len(proposals)+1} · chưa tính', box=detection['box']))
+                    if len(proposals) >= 40:
+                        break
             items.append(QAEvidenceItem(image_id=image_id, caption=caption,
                 image_url='/images/'+quote(image_id, safe=''), thumbnail_url='/thumbs/'+quote(image_id, safe=''),
                 observation=observation_by_id[image_id].observation if image_id in observation_by_id else None,
-                verification_status='verified' if accepted else 'unverified',
-                timestamp=row.timestamp if row else None, regions=output_regions.get(image_id, [])))
+                verification_status=('verified' if image_id in verified_observation_ids or exact_people is not None or reviewed_max is not None
+                                     else 'unverified'),
+                timestamp=row.timestamp if row else None,
+                unverified_proposals=proposals,
+                regions=(observation_by_id[image_id].regions if distinct_observation and image_id in observation_by_id
+                         else output_regions.get(image_id, []))))
         checked_ids = [o.image_id for o in observations]
         coverage = None
         if scope_ids:
@@ -878,11 +1003,61 @@ class ReasoningQA:
                             candidate_images=people_candidate_count,
                             reviewed_images=len(scope_ids) if exact_people is not None or reviewed_max is not None else len(verified_ids & set(scope_ids)),
                             source='reviewed_catalog' if exact_people is not None or reviewed_max is not None else 'visual_analysis')
+        match_candidates = []
+        distinct_estimate = None
+        if plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None:
+            engine = self.service.search_engine
+            crop_vectors = {}
+            if hasattr(engine, 'encode_image_crops'):
+                self.stage(owner, cid, 'embedding', rid)
+                keys, crops = await asyncio.to_thread(prepare_object_crops, observations, evidence)
+                try:
+                    if crops and deadline > time.monotonic():
+                        encoded = await asyncio.wait_for(engine.encode_image_crops(crops), deadline - time.monotonic())
+                        if len(encoded) == len(keys):
+                            crop_vectors = dict(zip(keys, encoded))
+                except (TimeoutError, RuntimeError, ValueError, OSError):
+                    log.warning('qa_crop_embedding_unavailable request_id=%s', rid)
+                if crop_vectors is None:
+                    crop_vectors = {}  # Never mix RegionCLIP and CLIP vector spaces.
+            distinct_estimate = estimate_distinct_people(observations, engine.region_index,
+                float(getattr(self.service.settings, 'qa_distinct_similarity_threshold', .85)),
+                crop_vectors=crop_vectors, category=plan.subject)
+            if distinct_estimate is not None:
+                distinct_estimate['requested_images'] = min(int(getattr(self.service.settings, 'qa_distinct_top_k', 10)), len(retrieved))
+                distinct_estimate['incomplete'] = observation_budget_exhausted or len(checked_ids) < distinct_estimate['requested_images']
+                distinct_estimate['region_source'] = 'grounding_dino_on_demand'
+            elif any(o.context_match == 'yes' and o.regions for o in observations):
+                explanation = ('Chưa tính được cosine cho các vùng đã phát hiện; hãy thử lại hoặc giảm số ảnh cần xét.' if vi
+                               else 'Could not compute cosine for the detected regions; retry or reduce the image limit.')
+                if accepted:
+                    answer = (answer or '') + ' ' + explanation
+                else:
+                    message = (message or '') + ' ' + explanation
+            if distinct_estimate and not accepted:
+                count = distinct_estimate['estimated_count']
+                count_note = (f'Ước lượng thử nghiệm {count} nhóm trong {distinct_estimate["examined_images"]} ảnh đã đọc; chưa xác minh và không đại diện toàn bộ dữ liệu.' if vi
+                              else f'Experimental estimate: {count} groups in {distinct_estimate["examined_images"]} examined images; unverified and not a corpus total.')
+                message = (message or '') + ' ' + count_note
+            if accepted and distinct_estimate:
+                count = distinct_estimate['estimated_count']
+                image_count = distinct_estimate['examined_images']
+                noun = 'người' if plan.operation == 'count_distinct_people' and vi else plan.subject
+                answer = (f'Ước lượng {count} {noun} khác nhau trong {image_count} ảnh đã đọc; '
+                          'kết quả chưa xác minh và không đại diện cho toàn bộ dữ liệu.' if vi else
+                          f'Estimated {count} distinct {noun} in {image_count} examined images; '
+                          'this is unverified and does not represent the full dataset.')
+                if distinct_estimate['unassigned_regions']:
+                    missing = distinct_estimate['unassigned_regions']
+                    answer += (f' Có {missing} vùng chưa tạo được embedding nên chưa tính.' if vi
+                               else f' {missing} regions could not be embedded and were excluded.')
         response = QAResponse(request_id=rid, conversation_id=cid,
             question_type=plan.question_type if plan else None,
             operation=plan.operation if plan else None,
             status='answered' if accepted else ('ambiguous' if reason in {'missing_context', 'conflicting_evidence'} else 'insufficient_evidence'),
             answer=answer, message=None if accepted else message,
+            identity_match_candidates=match_candidates,
+            distinct_estimate=distinct_estimate,
             reason_code=None if accepted else reason, evidence=items, claims=claims, partial=partial,
             examined_scope=dict(requested=req.scope.model_dump() if req.scope else None,
                 answer_scope=plan.answer_scope if plan else None,
@@ -908,4 +1083,5 @@ class ReasoningQA:
                                     scope=req.scope.model_dump() if req.scope else None)]
             self.conversations[owner, cid] = (time.monotonic()+1800, turns[-3:])
             self.conversations.move_to_end((owner,cid))
+        self.stage(owner, cid, 'done', rid)
         return response

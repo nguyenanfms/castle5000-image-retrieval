@@ -781,7 +781,7 @@
     }
   }
 
-  function openLightbox(id, prefillQuestion = null) {
+  function openLightbox(id, prefillQuestion = null, qaEvidence = null) {
     const imageChanged = currentImageId !== id;
     currentImageId = id;
     lightboxImg.src = `/images/${id}`;
@@ -791,16 +791,20 @@
     if (imageChanged || prefillQuestion !== null) {
       resetLightboxQaPanel(prefillQuestion);
     }
-    const result = currentResults.find((row) => row.id === id);
+    // QA evidence must never inherit conditions or highlights from a prior KIS search.
+    const inQa = Boolean(qaEvidence) || Boolean(retrievalQaPanel && !retrievalQaPanel.hidden);
+    const result = inQa ? null : currentResults.find((row) => row.id === id);
     if (searchV2) {
-      selectedSearchImage = id;
-      const cards = grid.querySelectorAll(".thumb");
-      cards.forEach((card) => card.setAttribute("aria-pressed", String(card.dataset.id === id)));
-      renderDemoEvidence(result);
+      if (!inQa) {
+        selectedSearchImage = id;
+        const cards = grid.querySelectorAll(".thumb");
+        cards.forEach((card) => card.setAttribute("aria-pressed", String(card.dataset.id === id)));
+      }
+      renderDemoEvidence(result, qaEvidence);
     } else {
       renderMatchedRegions(result?.matches || []);
       lightboxImg.onload = () => {
-        renderMatchedRegions(currentResults.find((row) => row.id === currentImageId)?.matches || []);
+        renderMatchedRegions(inQa ? [] : currentResults.find((row) => row.id === currentImageId)?.matches || []);
       };
     }
     lightbox.hidden = false;
@@ -840,7 +844,7 @@
       cup: "cốc", bowl: "tô", plate: "đĩa", bottle: "chai"})[object?.toLowerCase()] || object;
   }
 
-  function renderDemoEvidence(result) {
+  function renderDemoEvidence(result, initialQaEvidence = null) {
     const panel = $("search-region-evidence");
     const overlay = $("matched-overlay");
     const visual = $("lightbox-visual");
@@ -853,12 +857,19 @@
     overlay.style.removeProperty("display");
     visual.style.removeProperty("--photo-ratio");
     let selected = null;
+    let qaEvidence = initialQaEvidence && (initialQaEvidence.regions?.length || Array.isArray(initialQaEvidence.box))
+      ? initialQaEvidence : null;
     function draw() {
       if (lightboxImg.naturalWidth && lightboxImg.naturalHeight) {
         visual.style.setProperty("--photo-ratio", lightboxImg.naturalWidth / lightboxImg.naturalHeight);
       }
       overlay.replaceChildren();
       overlay.setAttribute("hidden", "");
+      if (qaEvidence && lightboxImg.complete && lightboxImg.naturalWidth) {
+        if (qaEvidence.regions?.length) highlightEvidenceRegions(qaEvidence.regions);
+        else if (Array.isArray(qaEvidence.box)) highlightEvidenceBox(qaEvidence.box, qaEvidence.image_id);
+        return;
+      }
       if (!selected?.evidence.length || !lightboxImg.complete || !lightboxImg.naturalWidth) return;
       const { w, h } = getNaturalOverlaySize();
       const stroke = {met: "#d6ff7f", violated: "#ff9d91", unknown: "#ffd692"}[selected.status];
@@ -914,6 +925,7 @@
       button.append(label, badge);
       button.setAttribute("aria-pressed", "false");
       button.addEventListener("click", () => {
+        qaEvidence = null;
         selected = check;
         for (const chip of phrases.children) chip.setAttribute("aria-pressed", String(chip === button));
         const lowerBound = check.observed_count > 0 ? `Phát hiện ít nhất ${check.observed_count}` : "";
@@ -923,7 +935,10 @@
       phrases.append(button);
     }
     panel.append(phrases, detail);
+    const initialEvidence = qaEvidence;
     phrases.children[Math.max(0, checks.findIndex((check) => check.evidence.some((point) => point.box)))]?.click();
+    qaEvidence = initialEvidence;
+    draw();
   }
 
   function closeLightbox() {
@@ -1144,22 +1159,294 @@
     btn.textContent = labelText;
     btn.title = ev.image_id;
     btn.addEventListener("click", () => {
-      openLightbox(ev.image_id);
-      if (ev.regions?.length) {
+      openLightbox(ev.image_id, null, ev);
+      if (!searchV2 && ev.regions?.length) {
         const showRegions = () => {
           if (currentImageId === ev.image_id) highlightEvidenceRegions(ev.regions);
         };
         if (lightboxImg.complete && lightboxImg.naturalWidth) showRegions();
         else lightboxImg.addEventListener("load", showRegions, { once: true });
-      } else if (Array.isArray(ev.box)) {
+      } else if (!searchV2 && Array.isArray(ev.box)) {
         highlightEvidenceBox(ev.box, ev.image_id);
       }
     });
     return btn;
   }
 
+  function createCosineSummary(member) {
+    const line = document.createElement("div");
+    line.className = "qa-distinct-cosine";
+    const comparisons = member.comparison?.comparisons;
+    if (!Array.isArray(comparisons)) {
+      line.textContent = "Chưa có dữ liệu cosine cho vùng này.";
+      return line;
+    }
+    const best = comparisons.filter(item => item.eligible && Number.isFinite(item.similarity))
+      .reduce((highest, item) => !highest || item.similarity > highest.similarity ? item : highest, null);
+    if (!best) {
+      line.textContent = comparisons.length ? "Chưa có vùng trước đó đủ điều kiện so sánh." : "Vùng đầu tiên, chưa có vùng để so sánh.";
+      return line;
+    }
+    const score = document.createElement("span");
+    score.textContent = `Cosine cao nhất: ${best.similarity.toFixed(4)} · ${best.above_threshold ? "đạt ngưỡng" : "dưới ngưỡng"} với `;
+    const reference = createEvidenceActionBtn({image_id: best.image_id,
+      regions: [{box: best.box, label: best.label}]}, `${best.image_id} · ${best.label}`);
+    line.append(score, reference);
+    return line;
+  }
+
+  function regroupDistinctEstimate(estimate, threshold) {
+    const members = (estimate.groups || []).flatMap(group => group.members || [])
+      .sort((a, b) => a.sequence - b.sequence);
+    if (!members.length || members.some(member => !member.comparison || !Number.isFinite(member.sequence))) return null;
+    const groups = [];
+    for (const original of members) {
+      const previous = new Map((original.comparison.comparisons || []).map(item => [item.sequence, item]));
+      const comparisons = [];
+      const options = [];
+      groups.forEach((group, index) => {
+        const eligible = !group.some(item => item.image_id === original.image_id);
+        const scores = [];
+        for (const item of group) {
+          const prior = previous.get(item.sequence);
+          if (!prior || !Number.isFinite(prior.similarity)) continue;
+          const comparison = {...prior, group_id: `G${index + 1}`, eligible, above_threshold: prior.similarity >= threshold};
+          comparisons.push(comparison);
+          scores.push(comparison.similarity);
+        }
+        if (eligible && scores.some(score => score >= threshold)) options.push({index, score: Math.max(...scores)});
+      });
+      let index;
+      if (options.length) index = options.reduce((best, item) => item.score > best.score ? item : best).index;
+      else { index = groups.length; groups.push([]); }
+      const decision = options.length ? "matched" : original.sequence === 1 ? "first" : "new_group";
+      groups[index].push({...original, comparison: {decision, group_id: `G${index + 1}`, comparisons}});
+    }
+    return {...estimate, threshold, estimated_count: groups.length,
+      groups: groups.map((members, index) => ({group_id: `G${index + 1}`, members})), preview: true};
+  }
+
+  function createDistinctGroupPanel(estimate, evidenceByImage = new Map(), originalEstimate = estimate) {
+    const panel = document.createElement("section");
+    panel.className = "qa-distinct-panel";
+    const header = document.createElement("div");
+    header.className = "qa-distinct-header";
+    const title = document.createElement("strong");
+    const subject = estimate.category === "person" || estimate.category === "people" ? "người" : (estimate.category || "đối tượng");
+    title.textContent = `Ước lượng ${estimate.estimated_count} nhóm ${subject}`;
+    const tag = document.createElement("span");
+    tag.textContent = "Chưa xác minh";
+    header.append(title, tag);
+    const summary = document.createElement("p");
+    const coverage = estimate.requested_images ? `${estimate.examined_images}/${estimate.requested_images}` : `${estimate.examined_images}`;
+    summary.textContent = `Đã đối chiếu ${coverage} ảnh · ${estimate.assigned_regions} vùng được so sánh`;
+    const warning = document.createElement("p");
+    warning.className = "qa-distinct-warning";
+    warning.textContent = "Chỉ là ước lượng thử nghiệm; đối tượng giống nhau có thể bị gộp nhầm hoặc bỏ sót. Không đại diện cho toàn bộ dữ liệu.";
+    if (estimate.region_source === "regionclip_proposals") warning.textContent += " Vùng R là đề xuất RegionCLIP, có thể sai hoặc thiếu.";
+    if (estimate.region_source === "grounding_dino_on_demand") warning.textContent += " Khung D được Grounding DINO dò theo câu hỏi, có thể sai hoặc bỏ sót.";
+    if (estimate.unassigned_regions) warning.textContent += ` Có ${estimate.unassigned_regions} vùng chưa được ghép.`;
+    if (estimate.incomplete) warning.textContent += " Chưa xử lý hết các ảnh top.";
+    if ([...evidenceByImage.values()].some(item => item.unverified_proposals?.length))
+      warning.textContent += " Khung gợi ý từ bộ phát hiện được xem riêng và chưa được tính.";
+    const grid = document.createElement("div");
+    grid.className = "qa-distinct-grid";
+    for (const [groupIndex, group] of (estimate.groups || []).entries()) {
+      const member = group.members?.[0];
+      if (!member || !Array.isArray(member.box)) continue;
+      const card = document.createElement("article");
+      card.className = "qa-distinct-card";
+      card.hidden = groupIndex >= 6;
+      const label = document.createElement("strong");
+      label.textContent = `${group.group_id} · ${group.members.length} vùng`;
+      const images = document.createElement("div");
+      images.className = "qa-distinct-images";
+      const evidence = {image_id: member.image_id, regions: [{box: member.box, label: member.label}]};
+      const cropButton = createEvidenceActionBtn(evidence, "");
+      cropButton.className = "qa-distinct-image";
+      cropButton.setAttribute("aria-label", `Xem vùng ${member.label} trong ảnh ${member.image_id}`);
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", `Vùng ${member.label}`);
+      const image = document.createElementNS("http://www.w3.org/2000/svg", "image");
+      const source = "/images/" + encodeURIComponent(member.image_id);
+      image.setAttribute("href", source);
+      svg.appendChild(image);
+      const dimensions = new Image();
+      dimensions.onload = () => {
+        const w = dimensions.naturalWidth, h = dimensions.naturalHeight;
+        const [x1, y1, x2, y2] = member.box;
+        image.setAttribute("width", String(w));
+        image.setAttribute("height", String(h));
+        svg.setAttribute("viewBox", `${x1*w} ${y1*h} ${(x2-x1)*w} ${(y2-y1)*h}`);
+      };
+      dimensions.src = source;
+      cropButton.appendChild(svg);
+      const allEvidence = evidenceByImage.get(member.image_id) || evidence;
+      const sourceButton = createEvidenceActionBtn(allEvidence, "");
+      sourceButton.className = "qa-distinct-image";
+      sourceButton.setAttribute("aria-label", `Xem tất cả vùng đã phát hiện trong ảnh ${member.image_id}`);
+      const thumbnail = document.createElement("img");
+      thumbnail.src = "/thumbs/" + encodeURIComponent(member.image_id);
+      thumbnail.alt = `Ảnh nguồn ${member.image_id}`;
+      thumbnail.addEventListener("error", () => { thumbnail.src = source; }, {once: true});
+      sourceButton.appendChild(thumbnail);
+      images.append(cropButton, sourceButton);
+      const caption = document.createElement("small");
+      caption.textContent = `Vùng đối tượng · Ảnh nguồn ${member.image_id}`;
+      card.append(label, images, caption);
+      if (allEvidence.unverified_proposals?.length) {
+        card.appendChild(createEvidenceActionBtn({image_id: member.image_id,
+          regions: allEvidence.unverified_proposals}, "Xem khung gợi ý chưa tính"));
+      }
+      const comparisonDetails = document.createElement("details");
+      comparisonDetails.className = "qa-card-comparison";
+      const comparisonTitle = document.createElement("summary");
+      comparisonTitle.textContent = "Chi tiết đối chiếu";
+      comparisonDetails.append(comparisonTitle, createCosineSummary(member));
+      card.appendChild(comparisonDetails);
+      if (group.members.length > 1) {
+        const details = document.createElement("details");
+        const detailsTitle = document.createElement("summary");
+        detailsTitle.textContent = "Các ảnh trong nhóm";
+        details.appendChild(detailsTitle);
+        for (const item of group.members.slice(1)) {
+          const entry = document.createElement("div");
+          entry.className = "qa-distinct-member";
+          entry.appendChild(createEvidenceActionBtn({image_id: item.image_id,
+            regions: [{box: item.box, label: item.label}]}, `${item.image_id} · ${item.label}`));
+          entry.appendChild(createCosineSummary(item));
+          details.appendChild(entry);
+        }
+        card.appendChild(details);
+      }
+      grid.appendChild(card);
+    }
+    panel.append(header, summary, warning, grid);
+    const controls = document.createElement("div");
+    controls.className = "qa-threshold-controls";
+    const label = document.createElement("label");
+    label.textContent = "Thử ngưỡng cosine t: ";
+    const input = document.createElement("input");
+    input.type = "number"; input.min = "-1"; input.max = "1"; input.step = "0.01"; input.value = String(estimate.threshold);
+    label.appendChild(input);
+    const apply = document.createElement("button");
+    apply.type = "button"; apply.className = "qa-copy-btn"; apply.textContent = "Xem thử";
+    const hint = document.createElement("small");
+    hint.textContent = estimate.preview ? `Xem thử từ cùng dữ liệu; đáp án gốc dùng t = ${originalEstimate.threshold}. Không tự đổi cấu hình.` : "Thử lại trên các vùng đã đọc, không gọi Gemini; chỉ là ước lượng.";
+    apply.addEventListener("click", () => {
+      const threshold = Number(input.value);
+      if (!input.value.trim() || !Number.isFinite(threshold) || threshold < -1 || threshold > 1) { input.setCustomValidity("Nhập ngưỡng từ -1 đến 1."); input.reportValidity(); return; }
+      input.setCustomValidity("");
+      const preview = regroupDistinctEstimate(originalEstimate, threshold);
+      if (preview) panel.replaceWith(createDistinctGroupPanel(preview, evidenceByImage, originalEstimate));
+      else hint.textContent = "Không có dữ liệu so sánh; hãy chạy lại câu hỏi.";
+    });
+    controls.append(label, apply, hint);
+    const technical = document.createElement("details");
+    technical.className = "qa-technical-details";
+    const technicalTitle = document.createElement("summary");
+    technicalTitle.textContent = "Tùy chọn đối chiếu";
+    technical.append(technicalTitle, controls);
+    panel.appendChild(technical);
+    if ((estimate.groups || []).length > 6) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "qa-copy-btn qa-distinct-more";
+      more.textContent = `Xem thêm ${estimate.groups.length - 6} nhóm`;
+      more.addEventListener("click", () => {
+        grid.querySelectorAll(".qa-distinct-card").forEach(card => { card.hidden = false; });
+        more.hidden = true;
+      });
+      panel.appendChild(more);
+    }
+    return panel;
+  }
+
+  function createCosineHistory(estimate) {
+    const history = document.createElement("div");
+    history.className = "qa-cosine-history";
+    const steps = (estimate?.groups || []).flatMap(group => (group.members || [])
+      .filter(member => member.comparison)
+      .map(member => ({member, groupId: group.group_id})))
+      .sort((a, b) => a.member.sequence - b.member.sequence);
+    if (steps.length) {
+      const heading = document.createElement("h3");
+      heading.textContent = `${steps.length} bước đối chiếu`;
+      const note = document.createElement("p");
+      note.textContent = `Kết quả gốc · Ngưỡng t = ${estimate.threshold}. Cosine ≥ t có thể được gộp; các vùng cùng ảnh không gộp chung.`;
+      history.append(heading, note);
+      for (const {member, groupId} of steps) {
+        const info = member.comparison;
+        const comparisons = [...(info.comparisons || [])].sort((a, b) => b.similarity - a.similarity);
+        const best = comparisons.find(item => item.eligible);
+        const step = document.createElement("details");
+        step.className = "qa-cosine-step";
+        const title = document.createElement("summary");
+        const decision = info.decision === "matched" ? `Gộp vào ${groupId}` : `Tạo ${groupId}`;
+        title.textContent = `#${member.sequence} · ${member.image_id} · ${member.label} → ${decision}` +
+          (best ? ` · cao nhất ${best.similarity.toFixed(4)} với ${best.image_id} · ${best.label}` : " · chưa có vùng đủ điều kiện so sánh");
+        step.appendChild(title);
+        const current = createEvidenceActionBtn({image_id: member.image_id,
+          regions: [{box: member.box, label: member.label}]}, `Xem vùng đang xét: ${member.image_id} · ${member.label}`);
+        step.appendChild(current);
+        if (!comparisons.length) {
+          const empty = document.createElement("p");
+          empty.textContent = "Vùng đầu tiên, chưa có vùng nào trước đó để so sánh.";
+          step.appendChild(empty);
+        }
+        for (const item of comparisons) {
+          const row = document.createElement("div");
+          row.className = "qa-cosine-row";
+          const reference = createEvidenceActionBtn({image_id: item.image_id,
+            regions: [{box: item.box, label: item.label}]}, `${item.image_id} · ${item.label}`);
+          const result = document.createElement("span");
+          const status = item.eligible ? (item.above_threshold ? "đạt ngưỡng" : "dưới ngưỡng") : "không gộp: nhóm đã có vùng cùng ảnh";
+          result.textContent = `${item.group_id} · cosine ${item.similarity.toFixed(4)} · ${status}`;
+          row.append(reference, result);
+          step.appendChild(row);
+        }
+        history.appendChild(step);
+      }
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "qa-retrieval-empty";
+      empty.textContent = "Chưa có bước đối chiếu cho câu trả lời này.";
+      history.appendChild(empty);
+    }
+    return history;
+  }
+
+  function selectQaSideTab(tab) {
+    const comparison = tab === "comparison";
+    $("qa-images-panel").hidden = comparison;
+    $("qa-comparison-panel").hidden = !comparison;
+    for (const [id, selected] of [["qa-images-tab", !comparison], ["qa-comparison-tab", comparison]]) {
+      const button = $(id);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    }
+  }
+
+  $("qa-images-tab").addEventListener("click", () => selectQaSideTab("images"));
+  $("qa-comparison-tab").addEventListener("click", () => selectQaSideTab("comparison"));
+  for (const [id, next] of [["qa-images-tab", "comparison"], ["qa-comparison-tab", "images"]]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      selectQaSideTab(next);
+      $(next === "images" ? "qa-images-tab" : "qa-comparison-tab").focus();
+    });
+  }
+
   function renderRetrievalPanel(turn, data = {}) {
     if (turn !== activeRetrievalTurn) return;
+    const comparisonPanel = $("qa-comparison-panel");
+    const comparisonKey = JSON.stringify(data.distinct_estimate || null);
+    if (comparisonPanel.dataset.contentKey !== comparisonKey) {
+      comparisonPanel.dataset.contentKey = comparisonKey;
+      comparisonPanel.replaceChildren(createCosineHistory(data.distinct_estimate));
+    }
     const scope = data.examined_scope || {};
     const examined = new Set(scope.image_ids || data.examined_ids || []);
     const evidence = new Map((data.evidence || []).map(ev => [ev.image_id, ev]));
@@ -1188,7 +1475,9 @@
     ids.forEach((id, index) => {
       const ev = evidence.get(id);
       const figure = document.createElement("figure");
-      figure.className = "qa-retrieval-card" + (ev && confirmed ? " is-evidence" : "");
+      figure.hidden = index >= 8;
+      const verified = ev && confirmed && ev.verification_status !== "unverified";
+      figure.className = "qa-retrieval-card" + (verified ? " is-evidence" : "");
       const button = createEvidenceActionBtn(ev || { image_id: id }, "");
       button.setAttribute("aria-label", `Xem ảnh ${id}`);
       const img = document.createElement("img");
@@ -1200,12 +1489,23 @@
       const caption = document.createElement("figcaption");
       const name = document.createElement("span"); name.textContent = pinnedPreview ? id : `${index + 1}. ${id}`;
       const badge = document.createElement("span"); badge.className = "qa-image-state";
-      badge.textContent = pinnedPreview ? "Đang hỏi" : ev ? (confirmed ? "Bằng chứng" : "Liên quan") : examined.has(id) ? "Đã đọc" : "Tìm được";
+      badge.textContent = pinnedPreview ? "Đang hỏi" : ev ? (verified ? "Bằng chứng" : "Vùng cần đối chiếu") : examined.has(id) ? "Đã đọc" : "Tìm được";
       caption.append(name, badge);
       figure.append(button, caption);
       if (ev?.caption) figure.title = ev.caption;
       grid.appendChild(figure);
     });
+    if (ids.length > 8) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "qa-retrieval-more";
+      more.textContent = `Xem thêm ${ids.length - 8} ảnh`;
+      more.addEventListener("click", () => {
+        grid.querySelectorAll("figure").forEach(figure => { figure.hidden = false; });
+        more.remove();
+      });
+      grid.appendChild(more);
+    }
   }
 
   function selectRetrievalTurn(turn) {
@@ -1250,7 +1550,14 @@
     turnEl.appendChild(userLine);
     const reply = document.createElement("div");
     reply.className = "qa-assistant-reply";
-    reply.append(botLine, altContainer, footer);
+    const progressDetails = document.createElement("details");
+    progressDetails.className = "qa-processing";
+    progressDetails.hidden = true;
+    const progressTitle = document.createElement("summary");
+    progressTitle.textContent = "Quá trình xử lý";
+    const progressList = document.createElement("ol");
+    progressDetails.append(progressTitle, progressList);
+    reply.append(botLine, progressDetails, altContainer, footer);
     turnEl.appendChild(reply);
 
     if (qaChatHistory) {
@@ -1258,10 +1565,95 @@
       scrollChatToBottom();
     }
 
-    const turn = { turnEl, botLine, botText, altContainer, footer, question, retrievalData: {} };
+    const turn = { turnEl, botLine, botText, altContainer, footer, progressDetails, progressList, question, retrievalData: {} };
     turnEl.addEventListener("click", () => selectRetrievalTurn(turn));
     selectRetrievalTurn(turn);
     return turn;
+  }
+
+  function renderQaProcessing(turn, progress) {
+    const labels = {planning: "Phân tích câu hỏi", scanning: "Kiểm tra phạm vi dữ liệu",
+      retrieving: "Truy xuất ảnh phù hợp", observing: "Mô hình đọc ảnh và xác định vùng",
+      synthesizing: "Tổng hợp bằng chứng", verifying: "Kiểm tra bằng chứng",
+      embedding: "So sánh embedding các vùng", done: "Hoàn tất xử lý"};
+    const stages = (progress.stages || []).filter(stage => labels[stage]);
+    if (!stages.length) return;
+    turn.progressDetails.hidden = false;
+    const observationsOpen = Boolean(turn.progressList.querySelector(".qa-observation-details")?.open);
+    turn.progressList.replaceChildren();
+    for (const stage of stages) {
+      const item = document.createElement("li");
+      item.textContent = labels[stage];
+      turn.progressList.appendChild(item);
+    }
+    if (progress.examined_ids?.length) {
+      const item = document.createElement("li");
+      item.textContent = `Đã đọc ${progress.examined_ids.length} ảnh: ${progress.examined_ids.join(", ")}`;
+      turn.progressList.appendChild(item);
+    }
+    if (progress.plan) {
+      const plan = progress.plan;
+      const detail = document.createElement("li");
+      const scopeNames = {scene: "một cảnh", per_image: "từng ảnh", comparison: "so sánh ảnh", corpus: "tập ảnh"};
+      const operations = {count_distinct_people: "đếm người khác nhau", count_distinct_objects: "đếm đối tượng khác nhau",
+        count_visible: "đếm đối tượng nhìn thấy", count_max: "tìm số lượng lớn nhất", describe: "mô tả", find: "tìm đối tượng",
+        compare: "so sánh", count_events: "đếm sự kiện", temporal_relation: "xét thứ tự thời gian"};
+      detail.textContent = `Mô hình hiểu: ${plan.question || "—"} · Đối tượng: ${plan.subject || "chưa rõ"} · Yêu cầu: ${operations[plan.operation] || plan.operation || "chưa rõ"} · Phạm vi: ${scopeNames[plan.answer_scope] || plan.answer_scope || "chưa rõ"}.`;
+      turn.progressList.appendChild(detail);
+      if (plan.known_conditions?.length || plan.information_needed || plan.queries?.length || plan.clarification) {
+        const extra = document.createElement("li");
+        const notes = [];
+        if (plan.known_conditions?.length) notes.push(`Điều kiện: ${plan.known_conditions.join("; ")}`);
+        if (plan.information_needed) notes.push(`Cần xác định: ${plan.information_needed}`);
+        if (plan.queries?.length) notes.push(`Truy vấn ảnh: ${plan.queries.join("; ")}`);
+        if (plan.clarification) notes.push(`Cần làm rõ: ${plan.clarification}`);
+        extra.textContent = notes.join(" · ");
+        turn.progressList.appendChild(extra);
+      }
+    }
+    if (progress.observations?.length) {
+      const item = document.createElement("li");
+      const details = document.createElement("details");
+      details.className = "qa-observation-details";
+      details.open = observationsOpen;
+      const title = document.createElement("summary");
+      title.textContent = `Mô hình quan sát ${progress.observations.length} ảnh`;
+      const note = document.createElement("p");
+      note.textContent = "Đây là mô tả và các vùng mô hình đề xuất; nội dung có thể sai hoặc chưa đầy đủ.";
+      details.append(title, note);
+      for (const observation of progress.observations) {
+        const row = document.createElement("div");
+        row.className = "qa-observation-row";
+        const label = document.createElement("strong");
+        label.textContent = `${observation.image_id} · ${observation.context_match === "yes" ? "phù hợp" : observation.context_match === "no" ? "không phù hợp" : "chưa rõ"}`;
+        const text = document.createElement("p");
+        text.textContent = observation.observation || "Mô hình không cung cấp mô tả.";
+        row.append(label, text);
+        if (observation.uncertainty) {
+          const uncertain = document.createElement("p");
+          uncertain.textContent = `Chưa chắc chắn: ${observation.uncertainty}`;
+          row.appendChild(uncertain);
+        }
+        if (observation.regions?.length) {
+          const regions = document.createElement("p");
+          const state = {complete: "đầy đủ theo mô hình", partial: "có thể chưa đầy đủ", unknown: "chưa xác định"};
+          regions.textContent = `${observation.regions.length} vùng đề xuất · ${state[observation.count_visibility] || state.unknown}: `;
+          for (const region of observation.regions) {
+            regions.appendChild(createEvidenceActionBtn({image_id: observation.image_id, regions: [region]}, region.label));
+          }
+          row.appendChild(regions);
+        }
+        if (observation.checks?.length) {
+          const checks = document.createElement("p");
+          const state = {met: "đạt", violated: "không đạt", unclear: "chưa rõ"};
+          checks.textContent = observation.checks.map(check => `Điều kiện ${check.condition_id}: ${state[check.status] || check.status}${check.detail ? ` (${check.detail})` : ""}`).join(" · ");
+          row.appendChild(checks);
+        }
+        details.appendChild(row);
+      }
+      item.appendChild(details);
+      turn.progressList.appendChild(item);
+    }
   }
 
   function finalizeChatTurn(turn, resp, lang, fallbackImageId = null) {
@@ -1312,6 +1704,7 @@
     if (answerEvidence.length) {
       const sources = document.createElement("section");
       sources.className = "qa-answer-sources";
+      if (resp.distinct_estimate) sources.classList.add("qa-sources-compact");
       sources.setAttribute("aria-label", "Ảnh đi kèm câu trả lời");
       const heading = document.createElement("p");
       heading.className = "qa-sources-title";
@@ -1361,12 +1754,47 @@
       }
       turn.footer.prepend(sources);
     }
+    if (resp.distinct_estimate?.groups?.length) {
+      const details = document.createElement("details");
+      details.className = "qa-group-disclosure";
+      const summary = document.createElement("summary");
+      const kind = resp.distinct_estimate.category === "person" || resp.distinct_estimate.category === "people"
+        ? "người" : (resp.distinct_estimate.category || "đối tượng");
+      summary.textContent = `Ước lượng ${resp.distinct_estimate.estimated_count} ${kind} khác nhau · Xem các nhóm`;
+      details.append(summary, createDistinctGroupPanel(resp.distinct_estimate,
+        new Map((resp.evidence || []).map(ev => [ev.image_id, ev]))));
+      const sources = turn.footer.querySelector(".qa-answer-sources");
+      if (sources) sources.after(details);
+      else turn.footer.prepend(details);
+    }
+    if (!resp.distinct_estimate && Array.isArray(resp.identity_match_candidates) && resp.identity_match_candidates.length) {
+      const group = document.createElement("details");
+      group.className = "qa-answer-sources";
+      const heading = document.createElement("summary");
+      heading.textContent = "Các cặp vùng người cần đối chiếu";
+      const warning = document.createElement("p");
+      warning.className = "qa-sources-title";
+      warning.textContent = "Chỉ là gợi ý theo độ giống hình ảnh, chưa xác nhận cùng người và không dùng để tính tổng.";
+      group.append(heading, warning);
+      for (const candidate of resp.identity_match_candidates) {
+        const row = document.createElement("p");
+        for (const [index, person] of [candidate.first, candidate.second].entries()) {
+          if (index) row.append(document.createTextNode(" ↔ "));
+          const ev = (resp.evidence || []).find(item => item.image_id === person.image_id)
+            || {image_id: person.image_id, regions: [{box: person.box, label: person.label}]};
+          row.append(createEvidenceActionBtn(ev, `${person.image_id} · ${person.label}`));
+        }
+        group.append(row);
+      }
+      turn.footer.append(group);
+    }
     const viewImages = document.createElement("button");
     viewImages.type = "button";
     viewImages.className = "qa-copy-btn";
     viewImages.textContent = "Xem ảnh truy xuất →";
     viewImages.addEventListener("click", () => {
       selectRetrievalTurn(turn);
+      selectQaSideTab("images");
       if (window.innerWidth <= 820) {
         const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
         $("qa-retrieval-panel").scrollIntoView({ behavior, block: "start" });
@@ -1711,9 +2139,11 @@
         try {
           const progress = await api("/api/qa/progress/" + encodeURIComponent(qaConversationId), { signal: controller.signal });
           if (reqSeq !== retrievalQaSeq || progressFinished) return;
+          renderQaProcessing(chatTurn, progress);
           const labels = lang === "en"
             ? { planning: "Understanding question…", scanning: "Scanning the image catalog…", retrieving: "Finding images…", observing: "Examining evidence…", synthesizing: "Combining evidence…", verifying: "Checking answer…" }
             : { planning: "Đang hiểu câu hỏi…", scanning: "Đang rà danh mục ảnh…", retrieving: "Đang tìm ảnh…", observing: "Đang đối chiếu…", synthesizing: "Đang tổng hợp…", verifying: "Đang kiểm tra câu trả lời…" };
+          if (progress.stage === "embedding") labels.embedding = lang === "en" ? "Comparing object crops…" : "Đang so sánh các vùng đối tượng…";
           if (labels[progress.stage]) chatTurn.botText.textContent = labels[progress.stage];
           if (progress.image_ids?.length) {
             chatTurn.retrievalData = progress;
@@ -1730,6 +2160,13 @@
         });
         if (reqSeq !== retrievalQaSeq) return;
 
+        if (!pinnedImageId) {
+          try {
+            const progress = await api("/api/qa/progress/" + encodeURIComponent(qaConversationId), {signal: controller.signal});
+            if (!resp.request_id || progress.request_id === resp.request_id) renderQaProcessing(chatTurn, progress);
+          } catch (_) { /* The answer is still usable if progress is unavailable. */ }
+        }
+        if (reqSeq !== retrievalQaSeq) return;
         finalizeChatTurn(chatTurn, resp, lang, pinnedImageId);
       } catch (err) {
         if (err.name === "AbortError" || reqSeq !== retrievalQaSeq) return;
@@ -1928,7 +2365,11 @@
       const result = await api("/api/submit/text", {
         method: "POST", body: JSON.stringify({ text }),
       });
-      qaSubmitStatus.textContent = `${verdictLabel(result.verdict)}${result.message ? ` · ${result.message}` : ""}`;
+      if (result.verdict === "pending") {
+        qaSubmitStatus.textContent = "Đã gửi đáp án. Giáo viên sẽ chấm thủ công.";
+      } else {
+        qaSubmitStatus.textContent = `${verdictLabel(result.verdict)}${result.message ? ` · ${result.message}` : ""}`;
+      }
     } catch (err) {
       qaSubmitStatus.textContent = err.message;
     } finally {
