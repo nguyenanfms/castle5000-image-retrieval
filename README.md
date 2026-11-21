@@ -1,6 +1,8 @@
 # Tìm ảnh Castle5000
 
-Ứng dụng tìm kiếm trên 5.000 ảnh Castle5000. CLIP lấy ảnh ứng viên, sau đó RegionCLIP đối chiếu các đối tượng đã chọn và trả về khung trên ảnh gốc. Giao diện chạy tại `/search-v2/`.
+Ứng dụng tìm ảnh và hỏi đáp trên 5.000 ảnh Castle5000. CLIP lấy ảnh ứng viên, RegionCLIP đối chiếu các đối tượng đã chọn và trả về khung trên ảnh gốc. Khi có khóa Gemini, hệ thống kiểm tra lại các ảnh đầu, chỉ ra bằng chứng cho từng yêu cầu, và trả lời câu hỏi về ảnh. Giao diện chạy tại `/search-v2/`.
+
+Sơ đồ hoạt động: mở `docs/so-do-he-thong/index.html` nếu bạn có thư mục này trên máy.
 
 ## 1. Chuẩn bị
 
@@ -53,9 +55,13 @@ Bạn có thể mở [trang trạng thái](http://127.0.0.1:8000/health) để k
 
 ## 4. Tìm ảnh lần đầu
 
-1. Nhập mô tả ảnh bằng tiếng Việt hoặc tiếng Anh rồi bấm **Tìm kiếm**. Kiểm tra các mục ở **Từ khóa & điều kiện**. Bạn có thể chọn lại điều kiện rồi bấm **Tìm lại**.
-2. Để thử khung đối tượng, chọn **Nhập điều kiện thủ công**. Nhập `A man in a striped sweater opens a refrigerator` vào **Mô tả toàn cảnh bằng tiếng Anh**. Bấm **Thêm cụm** hai lần để nhập `man in a striped sweater` và `refrigerator`.
-3. Bấm **Áp dụng thay đổi**. Giữ hai cụm ở bước đối chiếu rồi bấm **Tìm lại**. Mở một ảnh và bấm từng cụm để xem khung tương ứng hoặc trạng thái thiếu bằng chứng.
+1. Nhập mô tả ảnh bằng tiếng Việt hoặc tiếng Anh rồi bấm **Tìm kiếm**. Dải **Quá trình suy nghĩ** hiện 5 bước, mỗi bước có thời gian và một dòng kết quả: **Hiểu câu → Tìm → Lọc điều kiện → Gemini kiểm → Phóng to**.
+2. Bấm vào bước **Hiểu câu** để xem cụm đối tượng và điều kiện Gemini tách ra. Bỏ chọn mục không cần rồi bấm **Tìm lại**.
+3. Ảnh có nhãn **Khớp**, **Một phần** hoặc **Không khớp** là ảnh đã được Gemini kiểm. Ảnh khớp được xếp lên đầu, ảnh không khớp xuống cuối, ảnh chưa kiểm giữ thứ tự tìm kiếm. Muốn kiểm tiếp, bấm **Kiểm thêm 4 ảnh** trong bước Gemini kiểm.
+4. Mở một ảnh để xem lý do, trạng thái từng yêu cầu và vùng bằng chứng. Dải **Khung lân cận cùng giờ** (hoặc phím ← →) giúp xác nhận đúng sự kiện trước khi nộp.
+5. Không có Gemini thì chọn **Nhập điều kiện thủ công**. Ví dụ: nhập `A man in a striped sweater opens a refrigerator` vào **Mô tả toàn cảnh bằng tiếng Anh**, bấm **Thêm cụm** hai lần để nhập `man in a striped sweater` và `refrigerator`, rồi bấm **Áp dụng thay đổi** và **Tìm lại**.
+
+Một sự kiện trên DRES thường gồm nhiều khung hình liên tiếp, và nộp một khung bất kỳ trong đó là được tính đúng. Điều kiện "không có người" được kiểm bằng chỉ mục vùng sẵn có. Các điều kiện đếm khác hiện **Chưa kiểm tra** trừ khi bật `SEARCH_DETECTION_ENABLED`.
 
 Mặc định chương trình dùng DRES demo tại cổng 8090. Khi thử nút gửi ảnh, dùng Run ID `00000000-0000-4000-8000-000000005000`. Phản hồi đến từ máy chủ demo.
 
@@ -69,7 +75,22 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 Trên macOS hoặc Linux, dùng `test -f .env || cp .env.example .env`. Mở `.env`, điền `SEARCH_PLAN_API_KEY` bằng khóa của bạn rồi khởi động lại web. Có thể đặt `SEARCH_PLAN_MODEL` theo model mà khóa truy cập được. Nếu Gemini lỗi, dùng **Nhập điều kiện thủ công**.
 
+**Gemini dự phòng.** Đặt thêm `QA_API_KEY_BACKUP` (và `SEARCH_PLAN_API_KEY_BACKUP` nếu dùng khóa riêng cho phần tìm ảnh). Khi khóa chính hết quota (429) hoặc quá tải (503), hệ thống gọi lại bằng khóa dự phòng với **cùng model**. Khóa hết quota được nghỉ 10 phút. Nên dùng hai khóa thuộc hai project khác nhau, vì các khóa cùng project dùng chung quota.
+
+**Quota Gemini mỗi thao tác**
+
+| Thao tác | Số lượt gọi |
+|---|---|
+| Một lần tìm ảnh | tối đa 3: phân tích câu, kiểm 4 ảnh đầu, phóng to bằng chứng |
+| Tìm lại đúng câu cũ | 0, lấy từ bộ nhớ tạm |
+| **Kiểm thêm 4 ảnh** | 1–2 |
+| Một câu hỏi đáp | tùy câu; dừng sớm khi đã đủ bằng chứng |
+
+Tắt công tắc **Gemini kiểm 4 ảnh đầu** dưới ô tìm để mỗi lần tìm chỉ tốn 1 lượt.
+
 **QA.** Đặt `QA_ENABLED=true` trong `.env` và cấu hình nhà cung cấp theo các biến `QA_*` trong `.env.example`.
+
+**Hỏi đáp.** Tab **Hỏi đáp** hiện các bước đang chạy, thời gian, số ảnh đã đọc, và có nút **Dừng**. Grounding DINO dò người và vật trên CPU bằng tối đa 8 luồng, chạy song song với Gemini. Câu đếm người hoặc vật khác nhau có thanh kéo **ngưỡng cosine t** (mặc định 0,76): kéo đến đâu, câu trả lời và các nhóm được tính lại đến đó, không gọi thêm Gemini. Nếu Gemini lỗi giữa chừng, câu trả lời dựa trên các ảnh đã đọc và có ghi chú giới hạn.
 
 **Nộp đáp án QA.** Trong tab **Hỏi đáp**, mở **Nộp đáp án QA**, nhập Run ID hoặc đường dẫn Viewer rồi bấm **Chọn**. Nhập đáp án ngắn gọn và bấm **Nộp đáp án**. Nút **Dùng làm đáp án** ở mỗi câu trả lời giúp đưa nội dung vào ô để chỉnh sửa trước khi nộp. Hệ thống kiểm tra task hiện tại là QA và gửi một trường `text` theo hướng dẫn DRES. Trạng thái **ĐANG CHỜ CHẤM** nghĩa là DRES đã nhận và chờ trọng tài.
 
@@ -92,6 +113,19 @@ Danh mục này cần được rà thủ công trước khi sử dụng. Khởi 
 
 **DRES thật.** Đặt `DRES_BASE_URL`, `DRES_EVALUATION_ID` và `SESSION_SECRET` trong `.env`, rồi thêm `--real-dres` vào lệnh chạy. Dùng tài khoản DRES được cấp. Giữ khóa và cấu hình riêng trong `.env`.
 
+**Tinh chỉnh**
+
+| Biến trong `.env` | Mặc định | Ý nghĩa |
+|---|---|---|
+| `SEARCH_VERIFY_IMAGES` | 4 | Số ảnh đầu Gemini tự kiểm sau mỗi lần tìm |
+| `SEARCH_DETECTION_ENABLED` | false | Chạy Grounding DINO cho điều kiện đếm khi tìm ảnh (chậm trên CPU) |
+| `SEARCH_PLAN_TIMEOUT_S` | 20 | Thời gian chờ Gemini phân tích câu |
+| `QA_CONCURRENCY` | 1 | Số câu hỏi đáp chạy cùng lúc; 2 phù hợp máy 8 nhân |
+| `QA_AUTO_TIMEOUT_S` | 180 | Thời gian tối đa cho một câu hỏi đáp (tối đa 300) |
+| `QA_EARLY_STOP` | true | Dừng đọc ảnh khi đã đủ bằng chứng |
+| `QA_DISTINCT_SIMILARITY_THRESHOLD` | 0,76 | Ngưỡng ghép cùng một người hoặc vật giữa các ảnh |
+| `DETECTION_THREADS` | 0 | Số luồng CPU cho Grounding DINO; 0 là số nhân thật, tối đa 8 |
+
 ## Dữ liệu đi kèm
 
 | Tệp trong `runtime/` | Nội dung |
@@ -112,5 +146,6 @@ GitHub tính lượt tải ba tệp trên vào hạn mức Git LFS của chủ r
 - **Cổng đang được dùng**. Thêm `--port 8005 --dres-port 8095` vào lệnh chạy rồi mở [trang ở cổng 8005](http://127.0.0.1:8005/search-v2/).
 - **Chỉ mục chưa sẵn sàng**. Đọc thông báo trong terminal và kiểm tra [trạng thái nạp chỉ mục](http://127.0.0.1:8000/health). Cấu hình chạy này cần thấy `images: 5000` và `region_ready: true` trước khi tìm.
 - **Gemini báo lỗi cấu hình**. Kiểm tra `SEARCH_PLAN_API_KEY` và `SEARCH_PLAN_MODEL` hoặc dùng phần chỉnh mô tả tiếng Anh.
+- **Gemini 503 (quá tải) hoặc 429 (hết quota)**. 503 thường tự hết sau ít giây; bấm **Kiểm lại** hoặc hỏi lại. Với 429, thêm `QA_API_KEY_BACKUP` hoặc tắt công tắc kiểm tra bằng Gemini. Phần tìm ảnh bằng CLIP và RegionCLIP vẫn chạy khi Gemini lỗi.
 
 Phần tích hợp DRES kế thừa từ [castle5000_contest](https://github.com/linh222/castle5000_contest). Trọng số tìm kiếm toàn ảnh lấy từ [LAION OpenCLIP ViT-B/32](https://huggingface.co/laion/CLIP-ViT-B-32-laion2B-s34B-b79K).
