@@ -10,7 +10,7 @@ import httpx
 from .schemas import SearchPlan
 
 
-PROMPT_VERSION = "castle-search-v11"
+PROMPT_VERSION = "castle-search-v13"
 VIETNAMESE_MARKS = frozenset("đơưảạấầẩẫậắằẳẵặẻẽẹếềểễệỉịỏọốồổỗộớờởỡợủụứừửữựỷỹỵ")
 STRIPE_DIRECTIONS = r"horizontal|vertical|diagonal"
 STRIPE_ORIENTATION = re.compile(rf"\b({STRIPE_DIRECTIONS})(?:ly)?\s+(?:stripes|striped)\b", re.I)
@@ -52,11 +52,40 @@ INSTRUCTIONS = (
     "subject, including who does it and to what. Use any stated appearance needed to distinguish "
     "that person from others in action and spatial conditions. Use other for requirements that do not fit, "
     "such as an event order or a disjunction. Omit target and count when they do not apply. "
-    "Keep uncertainty in the caption and do not make a tentative detail a required condition."
+    "Keep uncertainty in the caption and do not make a tentative detail a required condition. "
+    "Keep how an item relates to its person: worn, held, carried or draped, e.g. 'man with a red towel over his shoulder' or 'man holding a bowl', never 'man in a towel' when the towel is not worn."
 )
 
 class SearchPlanError(Exception):
     pass
+
+
+PERSON_WORDS = re.compile(r"\b(woman|women|man|men|person|people|girl|boy|child|kid|lady|guy)\b", re.I)
+ATTRIBUTE_ONLY = re.compile(
+    r"^(?:an?\s+|the\s+)?(?:[\w-]+\s+){0,4}(shirt|t-shirt|top|blouse|sweater|jumper|hoodie|jacket|coat|dress|skirt|"
+    r"shorts|pants|trousers|jeans|leggings|apron|hat|cap|glasses|hair|ponytail|beard|scarf|shoes|sneakers)$", re.I)
+
+
+def bind_person_attributes(plan):
+    """Keep clothing and hair with the one person they describe.
+
+    'woman with long hair' + 'white shirt' + 'dark shorts' becomes one phrase, so a white
+    shirt worn by someone else cannot satisfy the requirement. With several people the
+    owner is ambiguous, so the phrases are left as the planner wrote them.
+    """
+    details = list(plan.detail_queries_en)
+    people = [i for i, phrase in enumerate(details) if PERSON_WORDS.search(phrase)]
+    attributes = [i for i, phrase in enumerate(details)
+                  if i not in people and ATTRIBUTE_ONLY.match(phrase.strip())]
+    if len(people) != 1 or not attributes:
+        return plan
+    owner = details[people[0]]
+    worn = [details[i].strip() for i in attributes]
+    joined = " and ".join(worn)
+    merged = f"{owner} in {joined}" if not any(w.lower().endswith(("hair", "ponytail", "beard")) for w in worn) \
+        else f"{owner} with {joined}"
+    kept = [merged if i == people[0] else phrase for i, phrase in enumerate(details) if i not in attributes]
+    return plan.model_copy(update={"detail_queries_en": kept})
 
 
 def compact_region_details(plan):
@@ -72,9 +101,12 @@ def compact_region_details(plan):
 
 class SearchPlanner:
     def __init__(self, settings, *, transport=None):
-        self.key = settings.search_plan_api_key.strip() or (
-            settings.qa_api_key.strip() if settings.qa_provider == 'gemini' else ''
-        )
+        gemini_qa = settings.qa_provider == 'gemini'
+        self.key = settings.search_plan_api_key.strip() or (settings.qa_api_key.strip() if gemini_qa else '')
+        backup = getattr(settings, 'search_plan_api_key_backup', '').strip() or (
+            getattr(settings, 'qa_api_key_backup', '').strip() if gemini_qa else '')
+        # Same model, second key: tried when the first is rate limited or overloaded.
+        self.keys = [k for k in dict.fromkeys([self.key, backup]) if k]
         self.model = settings.search_plan_model.strip()
         self.timeout = settings.search_plan_timeout_s
         self.cache_size = settings.search_plan_cache_size
@@ -152,10 +184,13 @@ class SearchPlanner:
         }
         try:
             async with asyncio.timeout(self.timeout):
-                response = await self.client.post(
-                    f"models/{self.model}:generateContent",
-                    headers={"x-goog-api-key": self.key}, json=payload, timeout=self.timeout,
-                )
+                for index, key in enumerate(self.keys):
+                    response = await self.client.post(
+                        f"models/{self.model}:generateContent",
+                        headers={"x-goog-api-key": key}, json=payload, timeout=self.timeout,
+                    )
+                    if response.status_code not in (429, 503) or index == len(self.keys) - 1:
+                        break
             if response.status_code == 429:
                 raise SearchPlanError("Gemini đã hết lượt gọi. Bạn có thể nhập mô tả tiếng Anh.")
             if not response.is_success:
@@ -164,7 +199,7 @@ class SearchPlanner:
             plan = SearchPlan.model_validate_json("".join(
                 part.get("text", "") for part in parts if not part.get("thought")
             ))
-            plan = compact_region_details(plan)
+            plan = bind_person_attributes(compact_region_details(plan))
             self.cache[key] = plan
             while len(self.cache) > self.cache_size:
                 self.cache.popitem(last=False)

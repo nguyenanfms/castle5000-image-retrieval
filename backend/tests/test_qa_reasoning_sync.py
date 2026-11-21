@@ -367,6 +367,7 @@ def test_distinct_processes_top_images_in_order_and_encodes_every_crop(tmp_path,
     import numpy as np
     from PIL import Image
     reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 10, 16)
+    service.settings.qa_early_stop = False  # Checks that every top image is processed in order.
     service.search_engine.region_index = make_proposal_index(ids, 'person')
     service.client.distinct_people = True
     original_client = service.client.structured

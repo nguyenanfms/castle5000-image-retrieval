@@ -6,7 +6,7 @@
   <title>Castle Search</title>
   <meta name="page-type" content="software" />
   <meta name="site-kind" content="software" />
-  <link rel="stylesheet" href="/style.css?v=castle-qa-distinct-10" />
+  <link rel="stylesheet" href="/style.css?v=castle-search-unified-17" />
 </head>
 <body>
   <main>
@@ -66,7 +66,14 @@
       </form>
 
       <section id="search-v2-controls" aria-label="Tiến độ tìm ảnh" hidden>
-        <ol class="search-flow" id="search-flow" data-phase="idle">
+        <section id="search-thinking" class="search-thinking" aria-label="Quá trình suy nghĩ" hidden>
+          <div class="thinking-head">
+            <span class="thinking-title">Quá trình suy nghĩ</span>
+            <span id="thinking-clock" class="thinking-clock"></span>
+          </div>
+          <ol id="thinking-steps" class="thinking-steps"></ol>
+        </section>
+        <ol class="search-flow" id="search-flow" data-phase="idle" hidden>
           <li id="flow-query" data-state="idle" aria-current="step">
             <button type="button" class="flow-node" data-flow-step="query" aria-controls="workflow-popup" aria-expanded="false">
               <span class="flow-point" aria-hidden="true"><i class="flow-glyph glyph-document"></i></span>
@@ -116,6 +123,11 @@
         <div class="workflow-controls">
           <p id="search-plan-status" role="status" hidden></p>
           <button type="button" class="search-quiet" id="search-manual" aria-controls="search-plan-editor" aria-expanded="false">Nhập điều kiện thủ công</button>
+          <label class="verify-toggle" for="search-verify-toggle">
+            <input type="checkbox" id="search-verify-toggle" checked />
+            <span class="verify-switch" aria-hidden="true"></span>
+            <span>Gemini kiểm 4 ảnh đầu</span>
+          </label>
         </div>
         <div id="search-plan-editor" hidden>
           <form id="search-plan-form">
@@ -156,21 +168,6 @@
           </div>
         </div>
 
-        <details class="qa-submit-panel competition-settings" id="qa-submit-panel">
-          <summary>Nộp đáp án QA</summary>
-          <div class="qa-submit-fields">
-            <label for="qa-evaluation-id">Run ID hoặc đường dẫn Viewer</label>
-            <div class="qa-submit-run">
-              <input id="qa-evaluation-id" type="text" placeholder="Nhập Run ID" autocomplete="off" />
-              <button id="qa-apply-evaluation" type="button">Chọn</button>
-            </div>
-            <p id="qa-evaluation-status" role="status">Chọn buổi thi để kiểm tra task.</p>
-            <label for="qa-submit-text">Đáp án để nộp</label>
-            <textarea id="qa-submit-text" rows="2" maxlength="2000" placeholder="Nhập đáp án ngắn gọn"></textarea>
-            <button id="qa-submit-answer" type="button" disabled>Nộp đáp án</button>
-            <p id="qa-submit-status" role="status"></p>
-          </div>
-        </details>
 
         <div id="qa-chat-history" class="qa-chat-history" role="log" aria-live="polite">
           <div class="qa-chat-empty" id="qa-chat-empty">
@@ -194,6 +191,21 @@
             <input type="text" id="retrieval-qa-query" placeholder="Ví dụ: a person wearing a red shirt" aria-label="Mô tả tìm kiếm tùy chọn" maxlength="1200" />
           </details>
         </form>
+        <details class="qa-submit-panel competition-settings" id="qa-submit-panel">
+          <summary>Nộp đáp án QA</summary>
+          <div class="qa-submit-fields">
+            <label for="qa-evaluation-id">Run ID hoặc đường dẫn Viewer</label>
+            <div class="qa-submit-run">
+              <input id="qa-evaluation-id" type="text" placeholder="Nhập Run ID" autocomplete="off" />
+              <button id="qa-apply-evaluation" type="button">Chọn</button>
+            </div>
+            <p id="qa-evaluation-status" role="status">Chọn buổi thi để kiểm tra task.</p>
+            <label for="qa-submit-text">Đáp án để nộp</label>
+            <textarea id="qa-submit-text" rows="2" maxlength="2000" placeholder="Nhập đáp án ngắn gọn"></textarea>
+            <button id="qa-submit-answer" type="button" disabled>Nộp đáp án</button>
+            <p id="qa-submit-status" role="status"></p>
+          </div>
+        </details>
       </div>
       <aside class="qa-retrieval-panel" id="qa-retrieval-panel" aria-labelledby="qa-retrieval-title">
         <header class="qa-retrieval-header">
@@ -202,9 +214,14 @@
         </header>
         <div class="qa-evidence-tabs" role="tablist" aria-label="Thông tin câu trả lời">
           <button id="qa-images-tab" type="button" role="tab" aria-selected="true" aria-controls="qa-images-panel">Ảnh truy xuất</button>
-          <button id="qa-comparison-tab" type="button" role="tab" aria-selected="false" aria-controls="qa-comparison-panel" tabindex="-1">Đối chiếu cosine</button>
+          <button id="qa-comparison-tab" type="button" role="tab" aria-selected="false" aria-controls="qa-comparison-panel" tabindex="-1">Ghép nhóm (cosine)</button>
         </div>
         <div id="qa-images-panel" class="qa-side-content" role="tabpanel" aria-labelledby="qa-images-tab">
+          <p class="qa-legend" id="qa-legend" hidden>
+            <span class="qa-image-state state-evidence">Bằng chứng</span> được dùng trong câu trả lời
+            <span class="qa-image-state state-read">Đã đọc</span> mô hình đã xem
+            <span class="qa-image-state state-unread">Chưa đọc</span> chỉ tìm được
+          </p>
           <div id="qa-retrieval-grid" class="qa-retrieval-grid"></div>
           <p id="qa-retrieval-empty" class="qa-retrieval-empty">Chưa có ảnh.</p>
         </div>
@@ -234,6 +251,11 @@
         <p id="lightbox-id" class="lightbox-id"></p>
         <button id="inspector-close" type="button" hidden>Đóng</button>
       </div>
+      <section id="lightbox-neighbors" class="neighbor-strip" aria-label="Khung hình lân cận" hidden>
+        <p class="neighbor-title">Khung lân cận cùng giờ <small>(phím ← →)</small></p>
+        <div id="lightbox-neighbor-list" class="neighbor-list"></div>
+      </section>
+      <section id="lightbox-verify" class="verify-panel" hidden></section>
       <button type="button" id="lightbox-open-chat-btn" class="qa-link-btn" hidden>Hỏi về ảnh này</button>
       <div id="search-region-evidence" hidden></div>
       <button id="matched-toggle" type="button" aria-pressed="false" hidden>Xem vùng khớp truy vấn</button>
@@ -293,6 +315,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=castle-qa-distinct-15"></script>
+  <script src="/app.js?v=castle-search-unified-26"></script>
 </body>
 </html>

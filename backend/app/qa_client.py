@@ -246,6 +246,7 @@ class OpenAICompatibleQAClient(BaseQAClient):
         prompt: str,
         evidence: list[EvidenceInput],
         deadline: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.is_ready():
             raise QAUnavailableError("Chưa cấu hình QA_BASE_URL hoặc QA_MODEL")
@@ -316,9 +317,13 @@ class GeminiQAClient(BaseQAClient):
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
         max_output_tokens: int = 256,
         transport: httpx.AsyncBaseTransport | None = None,
+        backup_api_key: str = "",
     ):
         self._base_url = (base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
         self._api_key = api_key.strip()
+        # Same model, second key: used when the active key is rate limited or overloaded.
+        self._api_keys = [k for k in dict.fromkeys([self._api_key, (backup_api_key or "").strip()]) if k]
+        self._key_cooldown_until = [0.0] * len(self._api_keys)
         self._model = model.strip()
         self.model_version = self._model or "unconfigured"
         self._max_tokens = max_output_tokens
@@ -329,12 +334,18 @@ class GeminiQAClient(BaseQAClient):
         )
 
     def is_ready(self) -> bool:
-        return bool(self._api_key and self._model)
+        return bool(self._api_keys and self._model)
+
+    def _key_order(self) -> list[int]:
+        """Keys not cooling down first, in configured order."""
+        now = time.monotonic()
+        indexes = list(range(len(self._api_keys)))
+        return sorted(indexes, key=lambda i: (self._key_cooldown_until[i] > now, i))
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _generate(self, payload: dict[str, Any], deadline: float) -> httpx.Response:
+    async def _generate(self, payload: dict[str, Any], deadline: float, key_index: int = 0) -> httpx.Response:
         # Only retry explicit transient server responses. Never replay a timeout
         # or connection failure where generation may already have completed.
         for attempt in range(3):
@@ -349,7 +360,7 @@ class GeminiQAClient(BaseQAClient):
                 async with asyncio.timeout(remaining):
                     resp = await self._client.post(
                         f"/models/{self._model}:generateContent",
-                        params={"key": self._api_key},
+                        params={"key": self._api_keys[key_index]},
                         json=payload,
                         timeout=remaining,
                     )
@@ -392,6 +403,7 @@ class GeminiQAClient(BaseQAClient):
         prompt: str,
         evidence: list[EvidenceInput],
         deadline: float,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.is_ready():
             raise QAUnavailableError("Chưa cấu hình QA_API_KEY hoặc QA_MODEL cho Gemini")
@@ -418,10 +430,23 @@ class GeminiQAClient(BaseQAClient):
                 "temperature": 0.0,
                 "maxOutputTokens": self._max_tokens,
                 "responseMimeType": "application/json",
+                # Enforced by Gemini when given: required fields are always present.
+                **({"responseSchema": response_schema} if response_schema else {}),
             },
         }
 
-        resp = await self._generate(payload, deadline)
+        order = self._key_order()
+        for position, key_index in enumerate(order):
+            resp = await self._generate(payload, deadline, key_index)
+            if resp.status_code not in (429, 503):
+                break
+            if resp.status_code == 429:
+                # Quota exhausted: skip this key for a while instead of failing every call.
+                self._key_cooldown_until[key_index] = time.monotonic() + 600
+            if position == len(order) - 1 or deadline - time.monotonic() < 3:
+                break
+            logger.warning('gemini_key_fallback from_key=%d to_key=%d http=%d',
+                           key_index + 1, order[position + 1] + 1, resp.status_code)
 
         if resp.status_code in (408, 504):
             raise QATimeoutError()
@@ -556,6 +581,7 @@ def create_qa_client(settings: Settings) -> BaseQAClient:
             model=settings.qa_model,
             base_url=settings.qa_base_url or "https://generativelanguage.googleapis.com/v1beta",
             max_output_tokens=settings.qa_max_output_tokens,
+            backup_api_key=settings.qa_api_key_backup,
         )
     if provider == "ollama":
         return OpenAICompatibleQAClient(

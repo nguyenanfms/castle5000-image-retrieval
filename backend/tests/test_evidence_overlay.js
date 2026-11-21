@@ -52,6 +52,7 @@ const ctx = {currentImageId: null, currentResults: [kisResult], lightboxImg: {},
   submitResult: {}, lightboxId: {}, lightbox: {}, retrievalQaPanel: qaPanel,
   searchV2: true, selectedSearchImage: null, grid: {querySelectorAll: () => []},
   resetLightboxQaPanel() {}, renderDemoEvidence: (result, evidence) => captured.push([result, evidence]),
+  renderVerification() {}, renderNeighbors() {},
   $: () => ({focus() {}})};
 vm.createContext(ctx);
 vm.runInContext(source.slice(start, end), ctx);

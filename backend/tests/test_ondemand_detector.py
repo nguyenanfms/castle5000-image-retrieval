@@ -37,7 +37,7 @@ def test_kis_does_not_treat_unscanned_candidates_as_empty():
     from app.schemas import SearchCondition
     engine = SearchEngine.__new__(SearchEngine)
     engine.settings = SimpleNamespace(search_candidate_k=3, search_region_threshold=.2,
-        search_region_weight=.25, detection_max_images=2, detection_timeout_s=5)
+        search_region_weight=.25, detection_max_images=2, detection_timeout_s=5, search_detection_enabled=True)
     engine.region_index = None
     engine.vector_index = SimpleNamespace(num_images=3, search_vector=lambda vec, k: [
         {'id': 'a.jpg', 'score': .9}, {'id': 'b.jpg', 'score': .8}, {'id': 'c.jpg', 'score': .7}])
@@ -58,3 +58,28 @@ def test_kis_does_not_treat_unscanned_candidates_as_empty():
     assert states['a.jpg'] == 'minimum_observed'
     assert states['b.jpg'] == 'count_unconfirmed'
     assert states['c.jpg'] == 'detector_unavailable'
+
+
+def test_search_conditions_skip_detector_unless_enabled():
+    import asyncio
+    from types import SimpleNamespace
+    from app.search import SearchEngine
+    from app.schemas import SearchCondition
+    engine = SearchEngine.__new__(SearchEngine)
+    engine.settings = SimpleNamespace(search_candidate_k=3, search_region_threshold=.2,
+        search_region_weight=.25, detection_max_images=2, detection_timeout_s=5, search_detection_enabled=False)
+    engine.region_index = None
+    engine.vector_index = SimpleNamespace(num_images=3, search_vector=lambda vec, k: [
+        {'id': 'a.jpg', 'score': .9}, {'id': 'b.jpg', 'score': .8}, {'id': 'c.jpg', 'score': .7}])
+    engine._cache_get = lambda key: None
+    engine._cache_put = lambda *args: None
+    async def encode(query):
+        return None
+    async def detect(ids, labels, deadline):
+        raise AssertionError('Grounding DINO must not run in search when disabled')
+    engine.encode_text = encode
+    engine.detect_candidates = detect
+    condition = SearchCondition(kind='at_least', subject='person', count=1)
+    results, _, mode, _, checked = asyncio.run(engine.search_demo('kitchen', 3, [], 'clip_region', [condition]))
+    assert mode == 'clip_region' and [r['id'] for r in results] == ['a.jpg', 'b.jpg', 'c.jpg']
+    assert {r['conditions'][0]['reason'] for r in results} == {'detector_unavailable'}

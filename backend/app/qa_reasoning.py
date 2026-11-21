@@ -14,7 +14,23 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .qa_client import QAClientError, QAInvalidOutputError, QATimeoutError, QATruncatedOutputError
+from .qa_client import QAClientError, QAInvalidOutputError, QATimeoutError, QATruncatedOutputError, QAUnavailableError
+
+
+def provider_note(failures, examined, vi):
+    if not failures:
+        return None
+    names = ({'observing': 'đọc ảnh', 'synthesizing': 'tổng hợp', 'verifying': 'kiểm tra', 'refining': 'tìm thêm ảnh'} if vi
+             else {'observing': 'image reading', 'synthesizing': 'synthesis', 'verifying': 'verification',
+                   'refining': 'search refinement'})
+    steps = ', '.join(dict.fromkeys(names.get(step, step) for step in failures))
+    return (f'Gemini quá tải hoặc hết quota ở bước {steps}; kết quả dựa trên {examined} ảnh đã đọc được. Hỏi lại sau để đọc thêm ảnh.' if vi
+            else f'Gemini was overloaded or out of quota during {steps}; the result uses the {examined} images read so far. Retry later to read more.')
+
+
+def provider_down(exc):
+    """Overload or quota errors: keep work already done instead of failing the request."""
+    return isinstance(exc, QAUnavailableError) or (isinstance(exc, QAClientError) and exc.status == 429)
 from .qa_aggregation import AggregationStep, aggregate_observations
 from .qa_people import ReviewedPeople, estimate_distinct_people, prepare_object_crops
 from .qa_store import EvidenceStore
@@ -308,6 +324,12 @@ class ReasoningQA:
         reviewed_max = None
         rejected_count_ids = set()
         invalid_observation_ids = set()
+        provider_failures = []
+        stopped_early = False
+        early_stop_disabled = False
+        skipped_ids = []
+        crop_cache = {}
+        distinct_history = []
         observation_budget_exhausted = False
         scope_ids = []
         indexed_count = 0
@@ -473,13 +495,66 @@ class ReasoningQA:
                 await record_observations(images[:midpoint])
                 await record_observations(images[midpoint:])
                 return
+            except QAClientError as exc:
+                if not provider_down(exc) or not observations:
+                    raise
+                log.warning('qa_provider_degraded request_id=%s stage=observing kept=%d', rid, len(observations))
+                provider_failures.append('observing')
+                partial = True
+                observation_budget_exhausted = True
+                return
             observations.extend(result)
             self.progress[owner, cid]['examined_ids'] = [o.image_id for o in observations]
             self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
 
+        async def encode_missing_crops():
+            """CLIP vectors for observed regions, computed once and reused by the final estimate."""
+            engine = self.service.search_engine
+            if not hasattr(engine, 'encode_image_crops'):
+                return
+            keys, crops = await asyncio.to_thread(prepare_object_crops, observations, evidence)
+            todo = [(key, crop) for key, crop in zip(keys, crops) if key not in crop_cache]
+            if not todo or deadline <= time.monotonic():
+                return
+            encoded = await asyncio.wait_for(engine.encode_image_crops([crop for _, crop in todo]),
+                                             deadline - time.monotonic())
+            if len(encoded) == len(todo):
+                crop_cache.update({key: vector for (key, _), vector in zip(todo, encoded)})
+
+        async def enough_evidence(distinct_people, corpus_scan):
+            """Cheap check after each batch: stop reading when more images would not change the answer."""
+            if early_stop_disabled or not getattr(self.service.settings, 'qa_early_stop', True):
+                return False
+            if plan.question_type == 'temporal' or (corpus_scan and not distinct_people):
+                return False  # Exhaustive scans and event counts need every image.
+            if distinct_people:
+                try:
+                    await encode_missing_crops()
+                except (TimeoutError, RuntimeError, ValueError, OSError):
+                    return False
+                if not crop_cache:
+                    return False
+                estimate = estimate_distinct_people(observations, self.service.search_engine.region_index,
+                    float(getattr(self.service.settings, 'qa_distinct_similarity_threshold', .85)),
+                    crop_vectors=crop_cache, category=plan.subject)
+                distinct_history.append(estimate['estimated_count'] if estimate else 0)
+                # At least 6 images, and the last two batches (4 images) added no new group.
+                return (len(observations) >= 6 and len(distinct_history) >= 3
+                        and distinct_history[-1] == distinct_history[-3] and distinct_history[-1] > 0)
+            matching = [o for o in observations if o.context_match == 'yes']
+            if plan.operation == 'compare':
+                return len(matching) >= 2
+            if plan.operation in {'count_visible', 'count_max', 'count_distinct_objects'}:
+                if plan.answer_scope != 'scene':
+                    return False  # Per-image and corpus counts must read every image.
+                counts = [len(o.regions) for o in matching if o.regions]
+                return any(o.count_visibility == 'complete' and o.regions for o in matching) or (
+                    len(counts) >= 2 and len(set(counts)) == 1)
+            return bool(matching)
+
         async def run():
             nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count
-            nonlocal scope_ids, people_candidate_count, corpus_aggregate, observation_budget_exhausted
+            nonlocal scope_ids, people_candidate_count, corpus_aggregate, observation_budget_exhausted, stopped_early, early_stop_disabled, skipped_ids
             plan = await invoke('planning', Plan, dict(question=req.question, language=req.answer_language,
                 history=history, selected_image=req.image_id, scope=req.scope.model_dump() if req.scope else None,
                 verified_sequence_available=bool(self.catalog.records),
@@ -591,6 +666,12 @@ class ReasoningQA:
                           else (distinct_top_k + 7) // 8 if distinct_people else 3)
             for round_index in range(max_rounds):
                 rounds = round_index+1
+                if provider_failures and observations:
+                    break
+                if skipped_ids:
+                    # The early stop did not settle the answer: read what was skipped, without stopping again.
+                    early_stop_disabled = True
+                    stopped_early = False
                 self.stage(owner, cid, 'retrieving', rid)
                 if corpus_scan and not distinct_people:
                     candidates = [x for x in scope_ids if x not in seen]
@@ -629,6 +710,9 @@ class ReasoningQA:
                 retrieved.extend(x for x in candidates if x not in retrieved)
                 self.progress[owner, cid]['image_ids'] = list(retrieved)
                 candidates = [x for x in candidates if x not in seen]
+                if skipped_ids:
+                    candidates = list(dict.fromkeys([x for x in skipped_ids if x not in seen] + candidates))
+                    skipped_ids = []
                 # Greedy visual diversity using existing index vectors; never deduplicate temporal neighbors.
                 if plan.question_type != 'temporal' and not corpus_scan:
                     vectors = getattr(self.service.search_engine, '_global_vectors', None)
@@ -658,42 +742,80 @@ class ReasoningQA:
                 counting = (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
                             or any(s.field == 'visible_count' for s in plan.processing_steps))
                 batch_size = 2 if counting else 4
-                for offset in range(0, len(candidates), batch_size):
-                    if distinct_people and deadline - time.monotonic() <= distinct_reserve_s:
-                        partial = True
-                        observation_budget_exhausted = True
-                        break
-                    images = []
-                    batch_ids = candidates[offset:offset+batch_size]
-                    if counting and hasattr(self.service.search_engine, 'detect_candidates'):
-                        label = 'person' if plan.operation == 'count_distinct_people' else canonical_label(plan.subject)
-                        if label:
-                            detect_deadline = min(deadline - (distinct_reserve_s if distinct_people else 2),
-                                time.monotonic() + getattr(self.service.settings, 'detection_timeout_s', 45))
-                            qa_detections.update(await self.service.search_engine.detect_candidates(batch_ids, [label], detect_deadline))
-                    for image_id in batch_ids:
-                        bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
-                            image_id, plan.question, image_id, None, False)
-                        evidence[image_id] = bundle.items[0]
-                        images.append(bundle.items[0])
-                        seen.add(image_id)
-                    await record_observations(images)
-                    if observation_budget_exhausted:
-                        break
+                engine = self.service.search_engine
+                detect_label = None
+                if counting and hasattr(engine, 'detect_candidates'):
+                    detect_label = 'person' if plan.operation == 'count_distinct_people' else canonical_label(plan.subject)
+
+                def start_detection(ids):
+                    # Runs Grounding DINO for the next batch while Gemini reads the current one.
+                    if not detect_label or not ids:
+                        return None
+                    detect_deadline = min(deadline - (distinct_reserve_s if distinct_people else 2),
+                        time.monotonic() + getattr(self.service.settings, 'detection_timeout_s', 45))
+                    work = engine.detect_candidates(ids, [detect_label], detect_deadline)
+                    try:
+                        return asyncio.get_running_loop().create_task(work)
+                    except RuntimeError:
+                        return work  # No running loop (synchronous driver): await in order.
+
+                batches = [candidates[offset:offset+batch_size] for offset in range(0, len(candidates), batch_size)]
+                pending_detection = start_detection(batches[0]) if batches else None
+                try:
+                    for batch_index, batch_ids in enumerate(batches):
+                        if distinct_people and deadline - time.monotonic() <= distinct_reserve_s:
+                            partial = True
+                            observation_budget_exhausted = True
+                            break
+                        images = []
+                        if pending_detection is not None:
+                            qa_detections.update(await pending_detection)
+                        pending_detection = (start_detection(batches[batch_index + 1])
+                                             if batch_index + 1 < len(batches) else None)
+                        for image_id in batch_ids:
+                            bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
+                                image_id, plan.question, image_id, None, False)
+                            evidence[image_id] = bundle.items[0]
+                            images.append(bundle.items[0])
+                            seen.add(image_id)
+                        await record_observations(images)
+                        if observation_budget_exhausted:
+                            break
+                        if (not req.image_id and batch_index + 1 < len(batches)
+                                and await enough_evidence(distinct_people, corpus_scan)):
+                            stopped_early = True
+                            skipped_ids = [x for batch in batches[batch_index + 1:] for x in batch]
+                            log.info('qa_early_stop request_id=%s read=%d skipped=%d', rid, len(seen),
+                                     sum(len(batch) for batch in batches[batch_index + 1:]))
+                            break
+                finally:
+                    if isinstance(pending_detection, asyncio.Future):
+                        # Finished detections stay in the detector cache for the next question.
+                        pending_detection.cancel()
+                    elif pending_detection is not None:
+                        pending_detection.close()
                 for old in zoom_targets:
                     review_attempted.add(old.image_id)
                     bundle = await asyncio.to_thread(
                         self.service.evidence_loader.load_for_image, old.image_id, plan.question,
                         old.image_id, region_candidates[old.image_id], True, check_count_detail=True)
                     if len(bundle.items) > 1:
+                        if provider_failures:
+                            break
                         try:
                             new, = await observe(bundle.items[:4], zoom=True)
                         except QATruncatedOutputError:
                             continue
+                        except QAClientError as exc:
+                            if not provider_down(exc):
+                                raise
+                            log.warning('qa_provider_degraded request_id=%s stage=zoom', rid)
+                            provider_failures.append('observing')
+                            break
                         observations[observations.index(old)] = new
                         self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
                         rejected_count_ids.discard(old.image_id)
-                if (distinct_people and not observation_budget_exhausted and not req.image_id
+                if (distinct_people and not observation_budget_exhausted and not stopped_early and not req.image_id
                         and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds):
                     continue
                 if plan.operation == 'count_max' or corpus_aggregate:
@@ -817,7 +939,8 @@ class ReasoningQA:
                             message = ('Không đủ dữ liệu phù hợp để thực hiện phép tổng hợp đã lập kế hoạch.' if vi
                                        else 'The planned aggregation cannot be performed on the available evidence.')
                             return
-                        draft = await invoke('synthesizing', Draft, dict(question=plan.question,
+                        try:
+                          draft = await invoke('synthesizing', Draft, dict(question=plan.question,
                             operation=plan.operation, answer_scope=plan.answer_scope,
                             aggregation_results=aggregation_results,
                             language=req.answer_language, observations=[x.model_dump() for x in matching],
@@ -826,6 +949,16 @@ class ReasoningQA:
                                         for x in observations if x.context_match != 'yes'],
                             scope=req.scope.model_dump() if req.scope else None,
                             instructions='Synthesize 1-3 short sentences. Treat supplied Python aggregation results as authoritative, and cite their image IDs. Each claim needs supporting image IDs. Comparisons must cite both sides. For arithmetic include operands, result and source IDs in calculations. Report separate scenes if they differ. For corpus totals or absence abstain unless evidence establishes the full scope. For follow-ups use only the supplied prior evidence. Never interpret summed appearances as distinct people or independent events. If scenes cannot be resolved return ambiguous with a clarification in message. Suggest new English queries for the specific detail still missing.'))
+                        except QAClientError as exc:
+                            if not provider_down(exc):
+                                raise
+                            log.warning('qa_provider_degraded request_id=%s stage=synthesizing', rid)
+                            provider_failures.append('synthesizing')
+                            partial = True
+                            reason = 'provider_unavailable'
+                            message = ('Gemini đang quá tải nên chưa tổng hợp được câu trả lời. Các ảnh liên quan đã đọc được hiển thị bên dưới; vui lòng thử lại sau ít giây.' if vi
+                                       else 'Gemini is overloaded, so the answer could not be synthesized. Related images read so far are shown; please retry shortly.')
+                            return
                 valid_ids = {x.image_id for x in observations if x.context_match == 'yes'}
                 for calculation in draft.calculations:
                     if not calculation.valid() or not set(calculation.evidence_ids) <= valid_ids:
@@ -847,12 +980,27 @@ class ReasoningQA:
                     verify_ids = list(scope_ids) if plan.operation == 'count_max' or corpus_aggregate else source_ids
                     for offset in range(0, len(verify_ids), 4):
                         ids = verify_ids[offset:offset+4]
-                        check = await invoke('verifying', Verification, dict(question=plan.question,
+                        try:
+                          check = await invoke('verifying', Verification, dict(question=plan.question,
                             language=req.answer_language, draft=draft.model_dump(), batch_image_ids=ids,
                             operation=plan.operation, conditions=condition_data(),
                             aggregation_results=aggregation_results,
                             observations=[x.model_dump() for x in observations],
                             instructions='Re-read every image in this batch and verify its observation and count, including images not cited as winners. Check each requested condition and the claims attributed to this batch. For a count check each marked instance is visible, belongs to the requested set, and is distinct from other marks in the same frame. For an exact visible count also check for missed visible instances. Validate comparison, arithmetic and coverage. Other batch citations are not missing. Set supported=false for unsupported claims or unverified observations. Suggest English queries for the specific visual gap.'), [evidence[x] for x in ids])
+                        except QAClientError as exc:
+                            if not provider_down(exc):
+                                raise
+                            log.warning('qa_provider_degraded request_id=%s stage=verifying', rid)
+                            provider_failures.append('verifying')
+                            partial = True
+                            if distinct_people:
+                                # Distinct counts are already reported as unverified estimates.
+                                return
+                            reason = 'provider_unavailable'
+                            message = ('Gemini đang quá tải nên chưa kiểm tra lại được bằng chứng; chưa thể chốt câu trả lời. Vui lòng thử lại sau ít giây.' if vi
+                                       else 'Gemini is overloaded, so the evidence could not be re-checked; the answer is not final. Please retry shortly.')
+                            draft = None
+                            return
                         verification_records.append({'image_ids': ids, **check.model_dump()})
                         supported = supported and check.supported and not check.missing
                         conflicts = conflicts or check.conflicts
@@ -873,7 +1021,7 @@ class ReasoningQA:
                             if distinct_people:
                                 draft.answer += (' Chưa đủ căn cứ để chốt tổng số trên toàn phạm vi.' if vi
                                                  else ' The total across the requested scope is unconfirmed.')
-                        if distinct_people and not observation_budget_exhausted and not req.image_id and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds:
+                        if distinct_people and not observation_budget_exhausted and not stopped_early and not req.image_id and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds:
                             continue
                         return
                     reason = 'conflicting_evidence' if conflicts else 'verification_failed'
@@ -894,15 +1042,23 @@ class ReasoningQA:
                 if (round_index < 2 and not previous_ids and not req.image_id
                         and plan.known_conditions and not any(o.context_match == 'yes' for o in observations)):
                     gaps = [o for o in observations if o.image_id in candidates]
-                    refinement = await invoke('refining', SearchRefinement, dict(
-                        question=plan.question, conditions=condition_data(),
-                        observations=[dict(observation=o.observation, uncertainty=o.uncertainty,
-                                           checks=[c.model_dump() for c in o.checks]) for o in gaps],
-                        previous_queries=queries,
-                        instructions='Up to 3 new English visual search queries. Target the unresolved '
-                                     'condition or correct the scene. Do not assume the requested answer.'
-                    ))
-                    queries = refinement.queries or queries
+                    try:
+                        refinement = await invoke('refining', SearchRefinement, dict(
+                            question=plan.question, conditions=condition_data(),
+                            observations=[dict(observation=o.observation, uncertainty=o.uncertainty,
+                                               checks=[c.model_dump() for c in o.checks]) for o in gaps],
+                            previous_queries=queries,
+                            instructions='Up to 3 new English visual search queries. Target the unresolved '
+                                         'condition or correct the scene. Do not assume the requested answer.'
+                        ))
+                        queries = refinement.queries or queries
+                    except QAClientError as exc:
+                        if not provider_down(exc):
+                            raise
+                        log.warning('qa_provider_degraded request_id=%s stage=refining', rid)
+                        provider_failures.append('refining')
+                        partial = True
+                        break
                 if (not queries and not distinct_people) or req.image_id or (previous_ids and not distinct_people):
                     break
             if seen - {o.image_id for o in observations}:
@@ -950,7 +1106,7 @@ class ReasoningQA:
         distinct_observation = bool(plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None)
         if distinct_observation:
             cited = list(dict.fromkeys(cited + [o.image_id for o in observations if o.context_match == 'yes']))
-        related_only = not accepted and reason in {'unverified_sequence', 'conflicting_evidence', 'verification_failed'}
+        related_only = not accepted and reason in {'unverified_sequence', 'conflicting_evidence', 'verification_failed', 'provider_unavailable'}
         if related_only:
             cited = [o.image_id for o in observations if o.context_match == 'yes']
         observation_by_id = {o.image_id: o for o in observations}
@@ -1010,22 +1166,21 @@ class ReasoningQA:
             crop_vectors = {}
             if hasattr(engine, 'encode_image_crops'):
                 self.stage(owner, cid, 'embedding', rid)
-                keys, crops = await asyncio.to_thread(prepare_object_crops, observations, evidence)
                 try:
-                    if crops and deadline > time.monotonic():
-                        encoded = await asyncio.wait_for(engine.encode_image_crops(crops), deadline - time.monotonic())
-                        if len(encoded) == len(keys):
-                            crop_vectors = dict(zip(keys, encoded))
+                    await encode_missing_crops()
                 except (TimeoutError, RuntimeError, ValueError, OSError):
                     log.warning('qa_crop_embedding_unavailable request_id=%s', rid)
-                if crop_vectors is None:
-                    crop_vectors = {}  # Never mix RegionCLIP and CLIP vector spaces.
+                keys, _ = await asyncio.to_thread(prepare_object_crops, observations, evidence)
+                # Never mix RegionCLIP and CLIP vector spaces: only CLIP crop vectors here.
+                crop_vectors = {key: crop_cache[key] for key in keys if key in crop_cache}
             distinct_estimate = estimate_distinct_people(observations, engine.region_index,
                 float(getattr(self.service.settings, 'qa_distinct_similarity_threshold', .85)),
                 crop_vectors=crop_vectors, category=plan.subject)
             if distinct_estimate is not None:
                 distinct_estimate['requested_images'] = min(int(getattr(self.service.settings, 'qa_distinct_top_k', 10)), len(retrieved))
-                distinct_estimate['incomplete'] = observation_budget_exhausted or len(checked_ids) < distinct_estimate['requested_images']
+                distinct_estimate['incomplete'] = observation_budget_exhausted or (
+                    not stopped_early and len(checked_ids) < distinct_estimate['requested_images'])
+                distinct_estimate['stopped_early'] = stopped_early
                 distinct_estimate['region_source'] = 'grounding_dino_on_demand'
             elif any(o.context_match == 'yes' and o.regions for o in observations):
                 explanation = ('Chưa tính được cosine cho các vùng đã phát hiện; hãy thử lại hoặc giảm số ảnh cần xét.' if vi
@@ -1059,11 +1214,13 @@ class ReasoningQA:
             identity_match_candidates=match_candidates,
             distinct_estimate=distinct_estimate,
             reason_code=None if accepted else reason, evidence=items, claims=claims, partial=partial,
+            note=provider_note(provider_failures, len(observations), vi) if accepted else None,
             examined_scope=dict(requested=req.scope.model_dump() if req.scope else None,
                 answer_scope=plan.answer_scope if plan else None,
                 image_ids=checked_ids, retrieved_image_ids=retrieved,
                 exhaustive=exact_people is not None or reviewed_max is not None or bool(accepted and plan and (plan.operation == 'count_max' or corpus_aggregate)),
-                coverage=coverage, temporal_order_verified=bool(self.catalog.records)),
+                coverage=coverage, temporal_order_verified=bool(self.catalog.records),
+                stopped_early=stopped_early),
             searched_count=len(searched), examined_count=len(observations), rounds=rounds, api_calls=calls,
             took_ms=int((time.perf_counter()-start)*1000), cache_hit=False, versions=versions)
         trace = {'plan': plan.model_dump() if plan else None,

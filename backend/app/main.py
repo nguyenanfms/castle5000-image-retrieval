@@ -30,6 +30,7 @@ from .schemas import (
     SearchRequest,
     SearchPlan,
     SearchPlanRequest,
+    SearchVerifyRequest,
     ParseQueryRequest,
     SearchResponse,
     SubmitRequest,
@@ -39,6 +40,7 @@ from .schemas import (
 )
 from .search import IndexNotBuiltError, SearchEngine
 from .search_plan import SearchPlanError, SearchPlanner
+from .search_verify import SearchVerifier
 from .query_parser import split_query
 from .sessions import LocalSession, SessionStore
 
@@ -83,6 +85,10 @@ async def lifespan(app: FastAPI):
             "SESSION_SECRET is using the insecure dev default; set it via env in production."
         )
     app.state.search_engine = SearchEngine(settings)
+    detector = getattr(app.state.search_engine, 'detector', None)
+    # Load Grounding DINO in the background; /health does not wait for it.
+    app.state.detector_warmup = (asyncio.create_task(asyncio.to_thread(detector.warmup))
+                                 if hasattr(detector, 'warmup') else None)
     app.state.metadata_store = MetadataStore(settings.metadata_path)
     app.state.dres_client = DresClient(settings)
     app.state.gateway = DresGateway(
@@ -100,6 +106,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("QAService failed to initialize and is unavailable: %s", exc)
         app.state.qa_service = None
+    app.state.search_verifier = (SearchVerifier(settings, app.state.qa_service, app.state.search_engine)
+                                 if app.state.qa_service is not None else None)
+    app.state.verify_limiter = RateLimiter(settings.rate_limit_per_min)
     app.state.task_cache = _TaskCache()
     app.state.ready = True
     logger.info("Loaded index with %d images", app.state.search_engine.num_images)
@@ -279,6 +288,45 @@ async def plan_search(req: SearchPlanRequest, request: Request):
         return await request.app.state.search_planner.plan(req.query, req.language)
     except SearchPlanError as exc:
         return _error('search_plan_unavailable', str(exc), 503)
+
+
+@app.post('/api/search/verify')
+async def verify_search(req: SearchVerifyRequest, request: Request):
+    session = _require_session(request)
+    verifier = getattr(request.app.state, 'search_verifier', None)
+    if verifier is None or not verifier.ready():
+        return _error('verify_unavailable', 'Chưa cấu hình Gemini cho bước kiểm tra ảnh.', 503)
+    if not request.app.state.verify_limiter.allow(session.username):
+        return _error('rate_limited', 'Kiểm tra ảnh quá nhanh, vui lòng chờ.', 429)
+    ids = [image_id for image_id in req.image_ids if request.app.state.search_engine.has_id(image_id)]
+    if not ids:
+        raise HTTPException(400, {'code': 'unknown_id', 'message': 'ID ảnh không hợp lệ'})
+    return await verifier.verify(req.query, req.detail_queries, req.conditions, ids, req.language,
+                                 limit=settings.search_verify_images)
+
+
+def _frame_key(image_id: str):
+    """(hour, second) from 'HH_second.jpg'; None when the name does not follow that pattern."""
+    stem = image_id.rsplit('.', 1)[0]
+    parts = stem.split('_')
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+@app.get('/api/neighbors/{image_id}')
+async def neighbors(image_id: str, request: Request, radius: int = 8):
+    """Frames taken just before and after, for checking the moment before submitting (viewing only)."""
+    _require_session(request)
+    engine = request.app.state.search_engine
+    key = _frame_key(image_id)
+    if not engine.has_id(image_id) or key is None:
+        raise HTTPException(404, {'code': 'not_found', 'message': 'Không có ảnh này'})
+    radius = max(1, min(radius, 30))
+    same_hour = sorted((k, i) for i in engine.vector_index.ids if (k := _frame_key(i)) and k[0] == key[0])
+    position = [i for _, i in same_hour].index(image_id)
+    window = same_hour[max(0, position - radius):position + radius + 1]
+    return {'id': image_id, 'frames': [{'id': i, 'second': k[1]} for k, i in window]}
 
 
 @app.get("/api/qa/status", response_model=QAStatusResponse)

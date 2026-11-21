@@ -1,6 +1,8 @@
 """Grounding DINO on retrieved images only; cached in memory by image and label."""
 from collections import OrderedDict
 import logging
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -10,10 +12,30 @@ from .search_conditions import canonical_label
 log = logging.getLogger(__name__)
 
 
+def detection_thread_count(configured=0):
+    """Threads for Grounding DINO inference; 0 means physical cores, capped at 8.
+
+    macOS keeps one thread: torch and faiss bundle separate OpenMP runtimes there
+    and concurrent pools can crash the process (see search.py).
+    """
+    if configured and configured > 0:
+        return int(configured)
+    if sys.platform == 'darwin':
+        return 1
+    try:
+        import psutil
+        cores = psutil.cpu_count(logical=False)
+    except ImportError:
+        cores = None
+    cores = cores or max(1, (os.cpu_count() or 2) // 2)
+    return max(1, min(8, cores))
+
+
 class OnDemandDetector:
-    def __init__(self, images_dir, model_dir, *, cache_size=2048):
+    def __init__(self, images_dir, model_dir, *, cache_size=2048, threads=0):
         self.images_dir = Path(images_dir).resolve()
         self.model_dir = Path(model_dir)
+        self.threads = detection_thread_count(threads)
         self.cache_size = cache_size
         self.cache = OrderedDict()
         self.lock = threading.Lock()
@@ -38,8 +60,14 @@ class OnDemandDetector:
         with Image.open(path) as source:
             image = ImageOps.exif_transpose(source).convert('RGB')
         inputs = self.processor(images=image, text=label + '.', return_tensors='pt').to(self.device)
-        with torch.inference_mode():
-            output = self.model(**inputs)
+        # The web app runs torch on one thread; detection alone gets more.
+        previous = torch.get_num_threads()
+        torch.set_num_threads(self.threads)
+        try:
+            with torch.inference_mode():
+                output = self.model(**inputs)
+        finally:
+            torch.set_num_threads(previous)
         result = self.processor.post_process_grounded_object_detection(
             output, inputs.input_ids, threshold=.3, text_threshold=.25,
             target_sizes=[(image.height, image.width)])[0]
@@ -51,6 +79,16 @@ class OnDemandDetector:
             if coords[0] < coords[2] and coords[1] < coords[3]:
                 rows.append({'box': coords, 'label': label, 'score': float(score)})
         return rows
+
+    def warmup(self):
+        """Load weights before the first question so it does not pay the load time."""
+        with self.lock:
+            try:
+                started = time.monotonic()
+                self._load()
+                log.info('grounding_dino_ready threads=%d load_s=%.1f', self.threads, time.monotonic() - started)
+            except (OSError, RuntimeError, ImportError, ValueError) as exc:
+                log.warning('grounding_dino_warmup_failed error=%s', type(exc).__name__)
 
     def detect_many(self, image_ids, labels, deadline):
         """Missing image keys mean unchecked, never an empty detection result."""

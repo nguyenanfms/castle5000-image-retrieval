@@ -100,7 +100,8 @@ class SearchEngine:
         self._semaphore = asyncio.Semaphore(settings.encode_concurrency)
         self.vector_index = VectorIndex.load(settings.index_path, settings.ids_path)
         self.condition_detections, self.condition_detector_version = {}, None
-        self.detector = OnDemandDetector(settings.images_dir, settings.detection_model_dir)
+        self.detector = OnDemandDetector(settings.images_dir, settings.detection_model_dir,
+                                         threads=settings.detection_threads)
         self.region_index = None
         self.region_notice = 'Chỉ mục vùng chưa sẵn sàng; điều kiện chi tiết dùng toàn ảnh làm dự phòng.'
         try:
@@ -116,6 +117,20 @@ class SearchEngine:
         if manifest.get('schema')=='regionclip-v1':
             return RegionClipIndex.load(path,self.vector_index.ids)
         return RegionIndex.load(path,self.vector_index.ids,self.settings.embed_model_name,self.settings.embed_pretrained,self.vector_index.index.d)
+
+    def person_scores(self):
+        """Per image, the highest RegionCLIP similarity to "person"; computed once per region index."""
+        index = self.region_index
+        if not isinstance(index, RegionClipIndex):
+            return None
+        cached = getattr(self, '_person_scores', None)
+        if cached is not None and cached[0] == index.version:
+            return cached[1]
+        best = np.full(len(self.vector_index.ids), -1.0, dtype=np.float32)
+        np.maximum.at(best, index.owners, index.vectors @ index.encode(['person'])[0])
+        scores = dict(zip(self.vector_index.ids, best.tolist()))
+        self._person_scores = (index.version, scores)
+        return scores
 
     def refresh_regions(self):
         """Activate a completed build without disrupting whole-image search."""
@@ -135,7 +150,8 @@ class SearchEngine:
 
     def _load_model(self) -> None:
         s = self.settings
-        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        self.device = ("cuda" if torch.cuda.is_available()
+                       else "mps" if torch.backends.mps.is_available() else "cpu")
         self.model, _, self._image_preprocess = open_clip.create_model_and_transforms(
             s.embed_model_name, pretrained=s.embed_pretrained, device=self.device
         )
@@ -211,7 +227,9 @@ class SearchEngine:
         threshold = self.settings.search_region_threshold
         weight = self.settings.search_region_weight
         version = index.version if index else None
-        detector_version = 'grounding-dino-on-demand-v1' if conditions else None
+        # Grounding DINO in search is opt-in: without it, conditions use RegionCLIP regions only.
+        use_detector = bool(conditions) and getattr(self.settings, 'search_detection_enabled', False)
+        detector_version = 'grounding-dino-on-demand-v1' if use_detector else ('regions-only' if conditions else None)
         actual_mode = 'clip_region' if mode == 'clip_region' and (conditions or (details and index)) else 'clip'
         key = ('demo', query, k, tuple(details), conditions, mode, version, detector_version,
                candidate_k, threshold, weight)
@@ -224,16 +242,16 @@ class SearchEngine:
         if actual_mode == 'clip_region' and conditions:
             baseline = self.vector_index.search_vector(await self.encode_text(query), self.num_images)
             labels = {canonical_label(value) for c in conditions
-                      if c.kind not in {'action', 'other'} for value in (c.subject, c.target) if value}
+                      if c.kind not in {'action', 'other'} for value in (c.subject, c.target) if value} if use_detector else set()
             labels.discard(None)
             limit = min(len(baseline), self.settings.detection_max_images)
             detections = await self.detect_candidates([row['id'] for row in baseline[:limit]], labels,
                 time.monotonic() + self.settings.detection_timeout_s) if labels else {}
-            ranked, checked = await asyncio.to_thread(
+            ranked, examined = await asyncio.to_thread(
                 rank_checked_shortlist, index, baseline, details, conditions, candidate_k, threshold, weight,
-                detections, target_k=k,
+                detections, target_k=k, person_scores=None if use_detector else self.person_scores(),
             )
-            checked = len(detections)
+            checked = len(detections) if use_detector else examined
         elif actual_mode == 'clip_region':
             ranked = await self._retrieve_shortlist(index, query, k, details, candidate_k, threshold, weight)
             checked = candidate_k

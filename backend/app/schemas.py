@@ -69,6 +69,15 @@ class SearchRequest(BaseModel):
         return self
 
 
+class SearchVerifyRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    query: str = Field(min_length=1, max_length=_settings.query_max_len)
+    detail_queries: list[str] = Field(default_factory=list, max_length=5)
+    conditions: list[SearchCondition] = Field(default_factory=list, max_length=5)
+    image_ids: list[str] = Field(min_length=1, max_length=50)
+    language: Literal["vi", "en"] = "vi"
+
+
 class SearchPlanRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     query: str = Field(min_length=1, max_length=_settings.query_max_len)
