@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     qa_rate_limit_per_min: int = 6
     qa_retrieval_k: int = 10
     qa_max_images: int = 5
+    qa_corpus_max_images: int = 128
     qa_retrieval_strategy: Literal["verified_early_stop", "consensus"] = "verified_early_stop"
     qa_confirm_candidates: int = 1
     qa_cache_size: int = 128

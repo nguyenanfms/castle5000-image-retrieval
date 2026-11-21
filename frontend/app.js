@@ -89,6 +89,18 @@
   let currentResults = [];
   let taskRunning = false;
   let selectedEvaluationId = "";
+  let currentTaskType = null;
+  const qaEvaluation = $("qa-evaluation-id");
+  const qaEvaluationStatus = $("qa-evaluation-status");
+  const qaSubmitText = $("qa-submit-text");
+  const qaSubmitAnswer = $("qa-submit-answer");
+  const qaSubmitStatus = $("qa-submit-status");
+
+  function updateQaSubmitAvailability() {
+    const type = (currentTaskType || "").toLowerCase();
+    const isQa = type.includes("question") && type.includes("answer");
+    qaSubmitAnswer.disabled = localQaMode || !selectedEvaluationId || !taskRunning || !isQa || !qaSubmitText.value.trim();
+  }
   let localQaMode = false;
 
   // QA runtime state (idle -> validating -> waiting -> answered/insufficient/ambiguous/error)
@@ -1275,6 +1287,20 @@
       } catch (_) { copy.textContent = "Chưa sao chép được"; }
     });
     turn.footer.appendChild(copy);
+    if (resp.status === "answered" && resp.answer) {
+      const useAnswer = document.createElement("button");
+      useAnswer.type = "button";
+      useAnswer.className = "qa-copy-btn";
+      useAnswer.textContent = "Dùng làm đáp án";
+      useAnswer.hidden = localQaMode;
+      useAnswer.addEventListener("click", () => {
+        qaSubmitText.value = resp.answer;
+        $("qa-submit-panel").open = true;
+        qaSubmitText.focus();
+        updateQaSubmitAvailability();
+      });
+      turn.footer.appendChild(useAnswer);
+    }
 
     turn.retrievalData = resp;
     if (fallbackImageId && !resp.evidence?.length) {
@@ -1796,6 +1822,13 @@
     try {
       const task = await api("/api/task");
       taskRunning = task.running;
+      currentTaskType = task.task_type;
+      if (selectedEvaluationId) {
+        qaEvaluationStatus.textContent = task.running
+          ? `Task: ${task.name || ""} · ${task.task_type || "Chưa rõ loại"}`
+          : "Chưa có task đang chạy.";
+      }
+      updateQaSubmitAvailability();
       setSearchEnabled(true);
       submitBtn.disabled = !task.running || !selectedEvaluationId;
     } catch (err) {
@@ -1805,6 +1838,9 @@
       }
       // DRES unreachable or no evaluation configured: fail soft, keep retrying.
       submitBtn.disabled = true;
+      taskRunning = false;
+      currentTaskType = null;
+      updateQaSubmitAvailability();
       setSearchEnabled(true);
     } finally {
       setTimeout(pollTask, TASK_POLL_MS);
@@ -1832,6 +1868,9 @@
     try {
       await api(`/api/evaluation/${encodeURIComponent(id)}`, { method: "POST" });
       selectedEvaluationId = id;
+      qaEvaluation.value = id;
+      qaEvaluationStatus.textContent = "Đã chọn buổi thi. Đang kiểm tra task…";
+      await pollTaskOnce();
       $("evaluation-message").textContent = `Đã chọn buổi thi: ${id}. Chờ kiểm tra task đang chạy.`;
     } catch (err) {
       $("evaluation-message").textContent = err.message;
@@ -1839,6 +1878,63 @@
       button.disabled = false;
     }
   };
+
+  async function pollTaskOnce() {
+    try {
+      const task = await api("/api/task");
+      taskRunning = task.running;
+      currentTaskType = task.task_type;
+      qaEvaluationStatus.textContent = task.running
+        ? `Task: ${task.name || ""} · ${task.task_type || "Chưa rõ loại"}`
+        : "Chưa có task đang chạy.";
+    } catch (err) {
+      taskRunning = false;
+      currentTaskType = null;
+      qaEvaluationStatus.textContent = err.message;
+    }
+    updateQaSubmitAvailability();
+  }
+
+  $("qa-apply-evaluation").addEventListener("click", async () => {
+    const id = qaEvaluation.value.trim().replace(/[?#].*$/, "").replace(/\/$/, "").split("/").pop();
+    if (!id) {
+      qaEvaluationStatus.textContent = "Nhập Run ID hoặc đường dẫn Viewer.";
+      return;
+    }
+    const button = $("qa-apply-evaluation");
+    button.disabled = true;
+    try {
+      await api(`/api/evaluation/${encodeURIComponent(id)}`, { method: "POST" });
+      selectedEvaluationId = id;
+      qaEvaluation.value = id;
+      $("evaluation-id-input").value = id;
+      $("evaluation-message").textContent = `Đã chọn buổi thi: ${id}.`;
+      await pollTaskOnce();
+    } catch (err) {
+      qaEvaluationStatus.textContent = err.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  qaSubmitText.addEventListener("input", updateQaSubmitAvailability);
+  qaSubmitAnswer.addEventListener("click", async () => {
+    const text = qaSubmitText.value.trim();
+    if (!text || qaSubmitAnswer.disabled) return;
+    if (!window.confirm(`Nộp đáp án “${text}” cho buổi thi ${selectedEvaluationId}?`)) return;
+    qaSubmitAnswer.disabled = true;
+    qaSubmitStatus.textContent = "Đang nộp…";
+    try {
+      const result = await api("/api/submit/text", {
+        method: "POST", body: JSON.stringify({ text }),
+      });
+      qaSubmitStatus.textContent = `${verdictLabel(result.verdict)}${result.message ? ` · ${result.message}` : ""}`;
+    } catch (err) {
+      qaSubmitStatus.textContent = err.message;
+    } finally {
+      await pollTaskOnce();
+    }
+  });
 
   window.addEventListener("pageshow", (event) => {
     // Back/forward navigation can restore the old document, including the chat.

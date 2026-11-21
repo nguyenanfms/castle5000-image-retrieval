@@ -72,6 +72,18 @@ class DresGateway:
                 (session.evaluation_id or self._require_evaluation_id()), session.dres_session_id, "day1_Kitchen_" + image_id.rsplit(".", 1)[0], "castle5000"
             )
 
+    async def submit_text(self, cookie: str | None, text: str) -> tuple[Verdict, str]:
+        session = self.require_session(cookie)
+        evaluation_id = session.evaluation_id or self._require_evaluation_id()
+        with self._dres_errors(cookie):
+            task = await self._client.current_task(evaluation_id, session.dres_session_id)
+            if task is None:
+                raise GatewayError(409, "no_active_task", "Chưa có task đang chạy trong buổi thi.")
+            task_type = task.task_type.casefold()
+            if "question" not in task_type or "answer" not in task_type:
+                raise GatewayError(409, "wrong_task_type", "Task hiện tại không phải QA hoặc chưa xác định được loại task.")
+            return await self._client.submit_text(evaluation_id, session.dres_session_id, text)
+
     def _require_evaluation_id(self) -> str:
         evaluation_id = self._settings.dres_evaluation_id
         if not evaluation_id:

@@ -951,6 +951,15 @@ select {
 .qa-chat-container { width:100%; max-width:920px; height:calc(100dvh - 160px); min-height:380px; max-height:none; }
 .qa-chat-header { display:flex; align-items:center; justify-content:space-between; min-height:60px; gap:12px; padding:12px 22px; border-bottom:1px solid var(--border); }
 .qa-chat-header h2 { margin:0; font-size:15px; font-weight:650; letter-spacing:-.2px; }
+.qa-submit-panel { border-bottom:1px solid var(--border); padding:8px 22px; font-size:13px; }
+.qa-submit-panel summary { cursor:pointer; color:var(--accent); font-weight:600; }
+.qa-submit-fields { display:grid; gap:7px; padding:12px 0 6px; }
+.qa-submit-fields label { font-size:12px; }
+.qa-submit-fields :is(input, textarea) { width:100%; min-width:0; }
+.qa-submit-fields p { margin:0; font-size:12px; color:var(--muted); }
+.qa-submit-fields p:empty { display:none; }
+.qa-submit-run { display:flex; gap:8px; }
+.qa-submit-run button, #qa-submit-answer { width:fit-content; white-space:nowrap; font-size:13px; }
 .qa-chat-header-actions { display:flex; align-items:center; gap:10px; }
 .qa-chat-header select { font-size:12px; padding:7px 9px; border-color:transparent; background:transparent; }
 .qa-quiet-btn { padding:8px 12px; font-size:12px; font-weight:500; color:var(--accent); background:var(--panel); border:1px solid var(--border); border-radius:8px; white-space:nowrap; }

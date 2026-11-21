@@ -6,7 +6,7 @@
   <title>Castle Search</title>
   <meta name="page-type" content="software" />
   <meta name="site-kind" content="software" />
-  <link rel="stylesheet" href="/style.css?v=castle-top-results-1" />
+  <link rel="stylesheet" href="/style.css?v=castle-qa-submit-1" />
 </head>
 <body>
   <main>
@@ -59,8 +59,8 @@
           <option value="en">English</option>
         </select>
         <select id="search-limit" aria-label="Số ảnh muốn xem" hidden>
-          <option value="25" selected>Top 25</option>
-          <option value="50">Top 50</option>
+          <option value="25">Top 25</option>
+          <option value="50" selected>Top 50</option>
         </select>
         <button type="submit">Tìm</button>
       </form>
@@ -155,6 +155,22 @@
             <button type="button" id="qa-clear-img-btn" class="qa-link-btn" hidden>Bỏ chọn ảnh</button>
           </div>
         </div>
+
+        <details class="qa-submit-panel competition-settings" id="qa-submit-panel">
+          <summary>Nộp đáp án QA</summary>
+          <div class="qa-submit-fields">
+            <label for="qa-evaluation-id">Run ID hoặc đường dẫn Viewer</label>
+            <div class="qa-submit-run">
+              <input id="qa-evaluation-id" type="text" placeholder="Nhập Run ID" autocomplete="off" />
+              <button id="qa-apply-evaluation" type="button">Chọn</button>
+            </div>
+            <p id="qa-evaluation-status" role="status">Chọn buổi thi để kiểm tra task.</p>
+            <label for="qa-submit-text">Đáp án để nộp</label>
+            <textarea id="qa-submit-text" rows="2" maxlength="2000" placeholder="Nhập đáp án ngắn gọn"></textarea>
+            <button id="qa-submit-answer" type="button" disabled>Nộp đáp án</button>
+            <p id="qa-submit-status" role="status"></p>
+          </div>
+        </details>
 
         <div id="qa-chat-history" class="qa-chat-history" role="log" aria-live="polite">
           <div class="qa-chat-empty" id="qa-chat-empty">
@@ -268,6 +284,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=castle-top-results-1"></script>
+  <script src="/app.js?v=castle-qa-submit-1"></script>
 </body>
 </html>

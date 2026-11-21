@@ -106,6 +106,7 @@ class DetectedObject(BaseModel):
 
 class RegionMatch(BaseModel):
     query: str
+    region_id: str | None = None
     score: float | None
     source: str
     box: list[float] | None = None
@@ -154,6 +155,11 @@ class SearchResponse(BaseModel):
 
 class SubmitRequest(BaseModel):
     id: str = Field(min_length=1, max_length=256)
+
+
+class SubmitTextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class SubmitResponse(BaseModel):
@@ -261,6 +267,8 @@ class QARegion(BaseModel):
 class QAEvidenceItem(BaseModel):
     image_id: str
     caption: str | None = None
+    observation: str | None = None
+    verification_status: Literal['verified', 'unverified'] | None = None
     image_url: str | None = None
     thumbnail_url: str | None = None
     timestamp: str | None = None

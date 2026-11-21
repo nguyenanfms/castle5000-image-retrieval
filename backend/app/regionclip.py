@@ -113,9 +113,10 @@ class RegionClipIndex(RegionIndex):
                 continue
             scores = similarities[start:start + count]
             for j, best in enumerate(scores.argmax(axis=0)):
-                record = self.records[rows[start + best]]
+                region_row = int(rows[start + best])
+                record = self.records[region_row]
                 matches[image_id].append({'query': texts[j], 'score': float(scores[best, j]),
-                                          'box': record['box'], 'kind': record['kind'],
+                                          'box': record['box'], 'kind': record['kind'], 'region_id': f'{self.version}:{region_row}',
                                           **{key: record[key] for key in ('source_view', 'source_window') if key in record}})
             start += count
         return matches
@@ -163,6 +164,6 @@ class RegionClipIndex(RegionIndex):
             matches=[]
             for j,text in enumerate(texts):
                 r=self.records[winners[i,j]] if has[i] else None
-                matches.append({'query':text,'score':float(scores[i,j]) if r else float(global_scores[i]),'source':'region' if r else 'whole_image','box':r['box'] if r else None,'kind':r['kind'] if r else None,'objects':r.get('objects',[]) if r else [],'model':'RegionCLIP-RN50' if r else 'CLIP-ViT-B-32'})
+                matches.append({'query':text,'score':float(scores[i,j]) if r else float(global_scores[i]),'source':'region' if r else 'whole_image','box':r['box'] if r else None,'kind':r['kind'] if r else None,'region_id':f'{self.version}:{int(winners[i,j])}' if r else None,'objects':r.get('objects',[]) if r else [],'model':'RegionCLIP-RN50' if r else 'CLIP-ViT-B-32'})
             results.append({'id':ids[i],'score':float(fused[i]),'matches':matches,'ranking':{'method':'rrf','clip_rank':int(gr[i]),'regionclip_rank':int(rr[i]) if has[i] else None,'clip_score':float(global_scores[i]),'regionclip_score':float(detail_score[i]) if has[i] else None}})
         return results

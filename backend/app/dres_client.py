@@ -127,6 +127,12 @@ class DresClient:
         answer: dict[str, str] = {"mediaItemName": media_item_name}
         if collection_name:
             answer["mediaItemCollectionName"] = collection_name
+        return await self._submit_answer(evaluation_id, session_id, answer)
+
+    async def submit_text(self, evaluation_id: str, session_id: str, text: str) -> tuple[Verdict, str]:
+        return await self._submit_answer(evaluation_id, session_id, {"text": text})
+
+    async def _submit_answer(self, evaluation_id: str, session_id: str, answer: dict[str, str]) -> tuple[Verdict, str]:
         body = {"answerSets": [{"answers": [answer]}]}
 
         resp = await self._client.post(

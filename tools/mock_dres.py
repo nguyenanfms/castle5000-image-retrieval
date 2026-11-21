@@ -10,6 +10,7 @@ Credentials: username "student", password "student".
 Evaluation id: "mock-eval".
 The browser accepts a UUID, so the mock also accepts
 "00000000-0000-4000-8000-000000005000".
+QA demo evaluation: "00000000-0000-4000-8000-000000005001".
 Submitting a mediaItemName of "trigger-202" / "trigger-404" / "trigger-412"
 forces that response code; "wrong-id" returns a WRONG verdict; anything
 else returns CORRECT. This lets tests exercise each path deliberately.
@@ -29,6 +30,7 @@ VALID_PASSWORD = "student"
 SESSION_ID = "mock-session-1"
 EVALUATION_ID = "mock-eval"
 DEMO_EVALUATION_ID = "00000000-0000-4000-8000-000000005000"
+QA_EVALUATION_ID = "00000000-0000-4000-8000-000000005001"
 
 
 def _error(description: str, status_code: int) -> JSONResponse:
@@ -57,12 +59,12 @@ async def logout():
 async def current_task(evaluation_id: str, session: str | None = None):
     if session != SESSION_ID:
         return _error("unauthorized", 401)
-    if evaluation_id not in {EVALUATION_ID, DEMO_EVALUATION_ID}:
+    if evaluation_id not in {EVALUATION_ID, DEMO_EVALUATION_ID, QA_EVALUATION_ID}:
         return _error("unknown evaluation", 404)
     return {
-        "name": "Task 1",
-        "taskGroup": "KIS",
-        "taskType": "visual",
+        "name": "QA01" if evaluation_id == QA_EVALUATION_ID else "Task 1",
+        "taskGroup": "QA" if evaluation_id == QA_EVALUATION_ID else "KIS",
+        "taskType": "LSC Question & Answer Text" if evaluation_id == QA_EVALUATION_ID else "visual",
         "duration": 300,
     }
 
@@ -71,11 +73,18 @@ async def current_task(evaluation_id: str, session: str | None = None):
 async def submit(evaluation_id: str, request: Request, session: str | None = None):
     if session != SESSION_ID:
         return _error("unauthorized", 401)
-    if evaluation_id not in {EVALUATION_ID, DEMO_EVALUATION_ID}:
+    if evaluation_id not in {EVALUATION_ID, DEMO_EVALUATION_ID, QA_EVALUATION_ID}:
         return _error("unknown evaluation", 404)
 
     body = await request.json()
     answers = body.get("answerSets", [{}])[0].get("answers", [{}])
+    if evaluation_id == QA_EVALUATION_ID:
+        if len(answers) != 1 or set(answers[0]) != {"text"} or not str(answers[0]["text"]).strip():
+            return _error("QA requires one text answer", 412)
+        return JSONResponse({"status": True, "submission": "INDETERMINATE",
+                             "description": "Đã nhận, đang chờ trọng tài chấm"}, status_code=202)
+    if answers and "text" in answers[0]:
+        return _error("Text is not allowed for a KIS task", 412)
     media_item_name = answers[0].get("mediaItemName", "") if answers else ""
 
     if media_item_name == "trigger-404":

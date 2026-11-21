@@ -42,10 +42,14 @@ docs/agents/
 output/
 
 # Local research and development artifacts.
-/docs/
+/docs/*
+!/docs/QA_EVIDENCE_FLOW.md
 /experiments/
 /notebooks/
-/backend/tests/
+/backend/tests/*
+!/backend/tests/__init__.py
+!/backend/tests/test_qa_reasoning_sync.py
+!/backend/tests/test_qa_aggregation_store.py
 /pytest.ini
 /requirements-regions.txt
 /tools/*

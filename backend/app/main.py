@@ -33,6 +33,7 @@ from .schemas import (
     ParseQueryRequest,
     SearchResponse,
     SubmitRequest,
+    SubmitTextRequest,
     SubmitResponse,
     TaskResponse,
 )
@@ -400,6 +401,16 @@ async def submit(req: SubmitRequest, request: Request):
         )
 
     verdict, message = await request.app.state.gateway.submit(_cookie(request), req.id)
+    return SubmitResponse(verdict=verdict, message=message)
+
+
+@app.post("/api/submit/text", response_model=SubmitResponse)
+async def submit_text(req: SubmitTextRequest, request: Request):
+    session = _require_session(request)
+    _require_competition(request)
+    if not request.app.state.submit_limiter.allow(session.username):
+        raise HTTPException(429, {"code": "rate_limited", "message": "Submit quá nhanh, vui lòng chờ"})
+    verdict, message = await request.app.state.gateway.submit_text(_cookie(request), req.text)
     return SubmitResponse(verdict=verdict, message=message)
 
 

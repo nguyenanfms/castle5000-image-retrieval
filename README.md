@@ -71,6 +71,10 @@ Trên macOS hoặc Linux, dùng `test -f .env || cp .env.example .env`. Mở `.e
 
 **QA.** Đặt `QA_ENABLED=true` trong `.env` và cấu hình nhà cung cấp theo các biến `QA_*` trong `.env.example`.
 
+**Nộp đáp án QA.** Trong tab **Hỏi đáp**, mở **Nộp đáp án QA**, nhập Run ID hoặc đường dẫn Viewer rồi bấm **Chọn**. Nhập đáp án ngắn gọn và bấm **Nộp đáp án**. Nút **Dùng làm đáp án** ở mỗi câu trả lời giúp đưa nội dung vào ô để chỉnh sửa trước khi nộp. Hệ thống kiểm tra task hiện tại là QA và gửi một trường `text` theo hướng dẫn DRES. Trạng thái **ĐANG CHỜ CHẤM** nghĩa là DRES đã nhận và chờ trọng tài.
+
+Để kiểm thử trên DRES demo, dùng Run ID `00000000-0000-4000-8000-000000005001` cho task QA. Đây là môi trường giả lập cục bộ. Để dùng DRES cuộc thi, chạy cấu hình DRES thật ở mục bên dưới và đăng nhập bằng tài khoản do ban tổ chức cấp.
+
 Trong chế độ hỏi tự động, QA tách điều kiện chọn cảnh khỏi phép xử lý, sau đó kiểm tra từng điều kiện trên ảnh. Khi trả lời số đếm, bấm ảnh bằng chứng để xem các vùng được tính. Câu hỏi tổng số người áp dụng cho người nhìn thấy trong phạm vi ảnh. Nếu danh mục phát hiện có sẵn, QA rà danh mục để chọn ảnh đối chiếu và ghi rõ mức bao phủ. Kết quả tự động có thể báo số tối thiểu dựa trên một ảnh có nhiều người xuất hiện đồng thời.
 
 Để trả tổng số người khác nhau trên một phạm vi đã kiểm duyệt, dùng `QA_PEOPLE_CATALOG_PATH` trỏ tới một tệp JSON cục bộ. Tệp cần có một mục cho **mọi ảnh trong phạm vi**, kể cả ảnh không có người. Dùng cùng mã ẩn danh cho cùng một người qua các ảnh, với tọa độ `[x1, y1, x2, y2]` trong khoảng 0 đến 1 trên ảnh gốc. Ví dụ định dạng:
