@@ -19,11 +19,14 @@ QAEVidenceSource = Literal["image", "region", "metadata"]
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
+    # "real": DRES_BASE_URL (competition); "demo": built-in mock DRES (student / student).
+    mode: Literal["real", "demo"] = "real"
 
 
 class LoginResponse(BaseModel):
     username: str
     role: str
+    mode: str = "real"
 
 
 SpatialCondition = Literal["left_of", "right_of", "above", "below", "near"]

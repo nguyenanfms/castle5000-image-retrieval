@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     dres_base_url: str = "http://dres:8080"
     dres_evaluation_id: str | None = None
     dres_timeout_s: float = 5.0
+    # Offer a "Demo" choice at login that uses the built-in mock DRES (no real submissions).
+    dres_demo_enabled: bool = True
 
     # Index / data
     index_path: Path = REPO_ROOT / "data" / "index.faiss"

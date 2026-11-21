@@ -17,6 +17,8 @@ class LocalSession:
     role: str
     created_at: float
     evaluation_id: str | None = None
+    # "real": the DRES of DRES_BASE_URL; "demo": the built-in mock DRES (backend/app/mock_dres.py).
+    mode: str = "real"
 
 
 class SessionStore:
@@ -32,7 +34,8 @@ class SessionStore:
         self._signer = TimestampSigner(settings.session_secret)
         self._sessions: dict[str, LocalSession] = {}
 
-    def create(self, dres_session_id: str, dres_user_id: str, username: str, role: str) -> str:
+    def create(self, dres_session_id: str, dres_user_id: str, username: str, role: str,
+               mode: str = "real") -> str:
         token = secrets.token_urlsafe(32)
         self._sessions[token] = LocalSession(
             dres_session_id=dres_session_id,
@@ -40,6 +43,7 @@ class SessionStore:
             username=username,
             role=role,
             created_at=time.time(),
+            mode=mode,
         )
         return self._signer.sign(token).decode("utf-8")
 

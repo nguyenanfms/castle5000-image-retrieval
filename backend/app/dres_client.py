@@ -68,10 +68,11 @@ class DresClient:
     technical note asks for in section 6.
     """
 
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None,
+                 base_url: str | None = None):
         self._settings = settings
         self._client = httpx.AsyncClient(
-            base_url=settings.dres_base_url,
+            base_url=base_url or settings.dres_base_url,
             timeout=settings.dres_timeout_s,
             transport=transport,
         )

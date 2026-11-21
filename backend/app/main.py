@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import httpx
+from pydantic import BaseModel, Field
 import logging
 from logging.handlers import RotatingFileHandler
 import time
@@ -91,8 +92,15 @@ async def lifespan(app: FastAPI):
                                  if hasattr(detector, 'warmup') else None)
     app.state.metadata_store = MetadataStore(settings.metadata_path)
     app.state.dres_client = DresClient(settings)
+    app.state.demo_dres_client = None
+    if settings.dres_demo_enabled:
+        from . import mock_dres
+        app.state.demo_dres_client = DresClient(
+            settings, transport=httpx.ASGITransport(app=mock_dres.app), base_url='http://demo-dres')
     app.state.gateway = DresGateway(
-        settings, app.state.dres_client, SessionStore(settings)
+        settings, app.state.dres_client, SessionStore(settings),
+        demo_client=app.state.demo_dres_client,
+        demo_evaluation_id=mock_dres.EVALUATION_ID if settings.dres_demo_enabled else None,
     )
     app.state.search_limiter = RateLimiter(settings.rate_limit_per_min)
     app.state.plan_limiter = RateLimiter(settings.rate_limit_per_min)
@@ -117,6 +125,8 @@ async def lifespan(app: FastAPI):
         await app.state.qa_service.aclose()
     await app.state.search_planner.aclose()
     await app.state.dres_client.aclose()
+    if app.state.demo_dres_client is not None:
+        await app.state.demo_dres_client.aclose()
     if log_handler is not None:
         qa_log.removeHandler(log_handler)
         log_handler.close()
@@ -205,8 +215,8 @@ async def region_status(request: Request):
 async def login(req: LoginRequest, request: Request, response: Response):
     if getattr(request.app.state, 'qa_local_mode', False):
         session = _require_session(request)
-        return LoginResponse(username=session.username, role=session.role)
-    cookie_value, session = await request.app.state.gateway.login(req.username, req.password)
+        return LoginResponse(username=session.username, role=session.role, mode='local')
+    cookie_value, session = await request.app.state.gateway.login(req.username, req.password, req.mode)
     response.set_cookie(
         settings.session_cookie_name,
         cookie_value,
@@ -215,13 +225,22 @@ async def login(req: LoginRequest, request: Request, response: Response):
         samesite="lax",
         max_age=settings.session_max_age_s,
     )
-    return LoginResponse(username=session.username, role=session.role)
+    return LoginResponse(username=session.username, role=session.role, mode=session.mode)
 
 
 @app.get("/api/me", response_model=LoginResponse)
 async def me(request: Request):
     session = _require_session(request)
-    return LoginResponse(username=session.username, role=session.role)
+    mode = 'local' if session.role == 'LOCAL_QA' else session.mode
+    return LoginResponse(username=session.username, role=session.role, mode=mode)
+
+
+@app.get('/api/login-modes')
+async def login_modes(request: Request):
+    """Which login choices the page shows: real competition DRES and/or the built-in demo."""
+    if getattr(request.app.state, 'qa_local_mode', False):
+        return {'modes': ['local']}
+    return {'modes': request.app.state.gateway.modes}
 
 
 @app.post("/api/logout")
@@ -361,6 +380,23 @@ async def qa_progress(conversation_id: str, request: Request):
             "plan": progress.get("plan"), "observations": progress.get("observations", [])}
 
 
+class QAResetRequest(BaseModel):
+    conversation_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,80}$")
+    # True: forget the conversation (new chat). False: only stop the running answer.
+    clear: bool = True
+
+
+@app.post("/api/qa/reset")
+async def qa_reset(req: QAResetRequest, request: Request):
+    """Stop answers still running for this user and, for a new chat, drop their history and progress."""
+    session = _require_session(request)
+    service = getattr(request.app.state, "qa_service", None)
+    if service is None:
+        return {"cancelled": 0}
+    cancelled = service.reasoning.reset(_qa_owner(request, session), req.conversation_id, req.clear)
+    return {"cancelled": cancelled}
+
+
 @app.post("/api/qa", response_model=QAResponse)
 async def qa_endpoint(req: QARequest, request: Request):
     session = _require_session(request)
@@ -386,8 +422,7 @@ async def evaluations(request: Request):
     session = _require_session(request)
     if session.role == 'LOCAL_QA':
         return []
-    with request.app.state.gateway._dres_errors(_cookie(request)):
-        return await request.app.state.dres_client.evaluations(session.dres_session_id)
+    return await request.app.state.gateway.evaluations(_cookie(request))
 
 
 @app.post('/api/evaluation/{evaluation_id}')
@@ -409,7 +444,7 @@ async def get_task(request: Request):
     if session.role == 'LOCAL_QA':
         return TaskResponse(running=False)
 
-    if not (_require_session(request).evaluation_id or settings.dres_evaluation_id):
+    if not request.app.state.gateway.has_evaluation(session):
         return TaskResponse(running=False)
 
     cached = None  # Task depends on the evaluation selected by this session.

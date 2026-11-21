@@ -13,6 +13,17 @@
     <section id="login-view">
       <form id="login-form">
         <h1>Castle Search</h1>
+        <fieldset id="login-mode" class="login-mode">
+          <legend>Chế độ</legend>
+          <label class="login-mode-option">
+            <input type="radio" name="login-mode" value="real" checked />
+            <span><strong>Thi thật</strong><small>Đăng nhập DRES của ban tổ chức, nộp bài thật</small></span>
+          </label>
+          <label class="login-mode-option" id="login-mode-demo">
+            <input type="radio" name="login-mode" value="demo" />
+            <span><strong>Demo</strong><small>DRES giả trong máy để thử, không nộp bài thật (student / student)</small></span>
+          </label>
+        </fieldset>
         <label>
           Tên đăng nhập (DRES)
           <input type="text" id="username" autocomplete="username" required />
@@ -37,6 +48,7 @@
           </div>
         </div>
         <div class="statusbar" id="statusbar" aria-label="Tài khoản" hidden>
+          <span id="session-mode" class="session-mode-badge" hidden></span>
           <span id="user-name"></span>
           <button id="logout-btn">Đăng xuất</button>
         </div>

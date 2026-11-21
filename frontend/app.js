@@ -175,12 +175,19 @@
     }
   }
 
-  function showLoggedIn(username, role) {
+  function showLoggedIn(username, role, mode) {
     localQaMode = role === "LOCAL_QA";
     loginView.hidden = true;
     searchView.hidden = false;
     statusbar.hidden = false;
     userName.textContent = username;
+    const modeBadge = $("session-mode");
+    if (modeBadge) {
+      modeBadge.hidden = !(mode === "demo" || mode === "real");
+      modeBadge.className = `session-mode-badge ${mode || ""}`;
+      modeBadge.textContent = mode === "demo" ? "Demo" : "Thi thật";
+      modeBadge.title = mode === "demo" ? "DRES giả trong máy: không nộp bài thật" : "DRES của ban tổ chức";
+    }
     logoutBtn.hidden = localQaMode;
     submitBtn.hidden = localQaMode;
     document.querySelectorAll(".competition-settings").forEach((el) => { el.hidden = localQaMode; });
@@ -196,19 +203,44 @@
     loginView.hidden = false;
     searchView.hidden = true;
     statusbar.hidden = true;
+    loadLoginModes();
   }
+
+  async function loadLoginModes() {
+    try {
+      const { modes } = await api("/api/login-modes");
+      const demo = $("login-mode-demo");
+      if (demo) demo.hidden = !modes.includes("demo");
+      if (!modes.includes("demo")) {
+        const real = loginForm.querySelector('input[name="login-mode"][value="real"]');
+        if (real) real.checked = true;
+      }
+    } catch {
+      /* Keep both choices; the server rejects a mode it does not offer. */
+    }
+  }
+
+  loginForm.querySelectorAll('input[name="login-mode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked && radio.value === "demo" && !$("username").value) {
+        $("username").value = "student";
+        $("password").value = "student";
+      }
+    });
+  });
 
   loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     loginError.hidden = true;
     const username = $("username").value;
     const password = $("password").value;
+    const mode = loginForm.querySelector('input[name="login-mode"]:checked')?.value || "real";
     try {
       const data = await api("/api/login", {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, mode }),
       });
-      showLoggedIn(data.username, data.role);
+      showLoggedIn(data.username, data.role, data.mode);
       pollTask();
     } catch (err) {
       loginError.textContent = err.message || "Đăng nhập thất bại";
@@ -2615,11 +2647,20 @@
     });
   }
 
+  // Closing the request alone leaves the server answering; ask it to stop (and, for a new chat, forget).
+  function resetQaOnServer(conversationId, clear) {
+    api("/api/qa/reset", {
+      method: "POST",
+      body: JSON.stringify({ conversation_id: conversationId, clear }),
+    }).catch(() => { /* Logged out or QA off: nothing is running for this user. */ });
+  }
+
   function abortRetrievalQa() {
     retrievalQaSeq += 1;
     if (retrievalQaAbort) {
       retrievalQaAbort.abort();
       retrievalQaAbort = null;
+      resetQaOnServer(qaConversationId, false);
     }
     if (retrievalQaSubmit) {
       retrievalQaSubmit.disabled = false;
@@ -2642,6 +2683,7 @@
 
   $("qa-new-chat")?.addEventListener("click", () => {
     abortRetrievalQa();
+    resetQaOnServer(qaConversationId, true);
     qaConversationId = crypto.randomUUID();
     setActiveQaImage(null);
     qaChatHistory.replaceChildren(qaChatEmpty);
@@ -3000,7 +3042,7 @@
     }
     try {
       const me = await api("/api/me");
-      showLoggedIn(me.username, me.role);
+      showLoggedIn(me.username, me.role, me.mode);
       pollTask();
     } catch {
       showLoggedOut();

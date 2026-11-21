@@ -262,6 +262,8 @@ class ReasoningQA:
         self.people = ReviewedPeople.load(service.settings.qa_people_catalog_path)
         self.conversations = OrderedDict()
         self.progress = {}
+        # (owner, conversation) -> (request id, task) of the request currently allowed to answer.
+        self.inflight = {}
         self.evidence_store = EvidenceStore(service.settings.qa_cache_size, service.settings.qa_cache_ttl_s)
 
     def _clean(self):
@@ -275,7 +277,37 @@ class ReasoningQA:
         while len(self.conversations) > 256:
             self.conversations.popitem(last=False)
 
+    def _current(self, owner, cid, rid):
+        active = self.inflight.get((owner, cid))
+        return active is None or active[0] == rid
+
+    def _progress(self, owner, cid, rid):
+        """Progress record a request may write; a superseded request writes to a throwaway dict."""
+        if self._current(owner, cid, rid):
+            record = self.progress.get((owner, cid))
+            if record is not None and record.get('request_id') == rid:
+                return record
+        return {}
+
+    def reset(self, owner, cid=None, clear=True):
+        """Cancel running answers of this owner (one conversation or all); optionally forget their history."""
+        cancelled = 0
+        for (o, c), (_, task) in list(self.inflight.items()):
+            if o == owner and (cid is None or c == cid):
+                del self.inflight[o, c]
+                if not task.done():
+                    task.cancel()
+                    cancelled += 1
+        stores = (self.conversations, self.progress) if clear else (self.progress,)
+        for store in stores:
+            for key in [k for k in store if k[0] == owner and (cid is None or k[1] == cid)]:
+                del store[key]
+        return cancelled
+
     def stage(self, owner, cid, name, rid):
+        if not self._current(owner, cid, rid):
+            log.info('qa_stage_superseded request_id=%s stage=%s', rid, name)
+            return
         previous = self.progress.get((owner, cid), {})
         images = {k: previous[k] for k in ('image_ids', 'examined_ids', 'plan', 'observations') if k in previous} if previous.get('request_id') == rid else {}
         history = list(previous.get('stages', [])) if previous.get('request_id') == rid else []
@@ -285,8 +317,30 @@ class ReasoningQA:
         log.info('qa_stage request_id=%s stage=%s', rid, name)
 
     async def answer(self, req, owner, rid, deadline, versions):
-        self._clean()
+        """One answer per conversation at a time: a new question cancels the unfinished previous one."""
         cid = req.conversation_id or uuid.uuid4().hex
+        req = req.model_copy(update={'conversation_id': cid})
+        key = (owner, cid)
+        previous = self.inflight.get(key)
+        if previous is not None and not previous[1].done():
+            previous[1].cancel()
+            log.info('qa_request_superseded request_id=%s by=%s', previous[0], rid)
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:  # Driven without an event loop (unit tests): nothing to cancel.
+            task = None
+        if task is None:
+            return await self._answer(req, owner, rid, deadline, versions)
+        self.inflight[key] = (rid, task)
+        try:
+            return await self._answer(req, owner, rid, deadline, versions)
+        finally:
+            if self.inflight.get(key, (None, None))[1] is task:
+                del self.inflight[key]
+
+    async def _answer(self, req, owner, rid, deadline, versions):
+        self._clean()
+        cid = req.conversation_id
         history = self.conversations.get((owner, cid), (0, []))[1]
         start = time.perf_counter()
         # Leave time for verification and CLIP crop embeddings after detection.
@@ -303,10 +357,11 @@ class ReasoningQA:
                 response = QAResponse.model_validate(cached['response']).model_copy(update={
                     'request_id': rid, 'conversation_id': cid, 'cache_hit': True,
                     'took_ms': int((time.perf_counter() - start) * 1000)})
-                self.conversations[owner, cid] = (time.monotonic()+1800, [dict(
-                    question=req.question, answer=response.answer,
-                    image_ids=[item.image_id for item in response.evidence],
-                    scope=req.scope.model_dump() if req.scope else None)])
+                if self._current(owner, cid, rid):
+                    self.conversations[owner, cid] = (time.monotonic()+1800, [dict(
+                        question=req.question, answer=response.answer,
+                        image_ids=[item.image_id for item in response.evidence],
+                        scope=req.scope.model_dump() if req.scope else None)])
                 self.evidence_store.save_trace(owner, rid, cached['trace'])
                 self.stage(owner, cid, 'done', rid)
                 return response
@@ -504,8 +559,8 @@ class ReasoningQA:
                 observation_budget_exhausted = True
                 return
             observations.extend(result)
-            self.progress[owner, cid]['examined_ids'] = [o.image_id for o in observations]
-            self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
+            self._progress(owner, cid, rid)['examined_ids'] = [o.image_id for o in observations]
+            self._progress(owner, cid, rid)['observations'] = [o.model_dump() for o in observations]
 
         async def encode_missing_crops():
             """CLIP vectors for observed regions, computed once and reused by the final estimate."""
@@ -585,7 +640,7 @@ class ReasoningQA:
                     'for complete visual counts. aggregate sums visible appearances, never unique people.'
                 )))
             plan = apply_distinct_scope(plan, req)
-            self.progress[owner, cid]['plan'] = {
+            self._progress(owner, cid, rid)['plan'] = {
                 'question': plan.question, 'subject': plan.subject, 'operation': plan.operation,
                 'answer_scope': plan.answer_scope, 'known_conditions': plan.known_conditions,
                 'information_needed': plan.information_needed, 'queries': plan.queries,
@@ -601,7 +656,7 @@ class ReasoningQA:
                 return
             if re.search(r'(?:mấy|bao nhiêu)\s+lần|how many times', req.question, re.I):
                 plan.operation = 'count_events'
-                self.progress[owner, cid]['plan']['operation'] = plan.operation
+                self._progress(owner, cid, rid)['plan']['operation'] = plan.operation
             if plan.operation == 'count_events':
                 plan.question_type = 'temporal'
             elif plan.operation == 'temporal_relation':
@@ -708,7 +763,7 @@ class ReasoningQA:
                     if plan.question_type == 'temporal':
                         candidates = list(dict.fromkeys(self.catalog.neighbors(candidates[:4], req.scope)+candidates))
                 retrieved.extend(x for x in candidates if x not in retrieved)
-                self.progress[owner, cid]['image_ids'] = list(retrieved)
+                self._progress(owner, cid, rid)['image_ids'] = list(retrieved)
                 candidates = [x for x in candidates if x not in seen]
                 if skipped_ids:
                     candidates = list(dict.fromkeys([x for x in skipped_ids if x not in seen] + candidates))
@@ -813,7 +868,7 @@ class ReasoningQA:
                             provider_failures.append('observing')
                             break
                         observations[observations.index(old)] = new
-                        self.progress[owner, cid]['observations'] = [o.model_dump() for o in observations]
+                        self._progress(owner, cid, rid)['observations'] = [o.model_dump() for o in observations]
                         rejected_count_ids.discard(old.image_id)
                 if (distinct_people and not observation_budget_exhausted and not stopped_early and not req.image_id
                         and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds):
@@ -1235,7 +1290,7 @@ class ReasoningQA:
         if accepted and not partial and not history and exact_people is None and reviewed_max is None:
             self.evidence_store.put(cache_key, trace, response.model_dump(),
                                     self.service.settings.images_dir, checked_ids or cited)
-        if accepted:
+        if accepted and self._current(owner, cid, rid):
             turns = history + [dict(question=plan.question, answer=response.answer, image_ids=cited,
                                     scope=req.scope.model_dump() if req.scope else None)]
             self.conversations[owner, cid] = (time.monotonic()+1800, turns[-3:])
