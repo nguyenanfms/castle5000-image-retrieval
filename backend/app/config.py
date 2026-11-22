@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     qa_auto_timeout_s: float = Field(default=180.0, gt=0, le=300)
     # Stop reading retrieved images once the evidence already settles the answer.
     qa_early_stop: bool = True
+    # rules: per-question-type evidence rules. stable_answer: after each batch ask for a short draft answer
+    # and stop when two consecutive batches give the same one (reads 2 images per batch, one extra call each).
+    qa_early_stop_mode: Literal["rules", "stable_answer"] = "rules"
     qa_sequence_path: Path = REPO_ROOT / "data" / "qa_sequences.json"
     qa_people_catalog_path: Path = REPO_ROOT / "data" / "qa_people_reviewed.json"
     qa_rate_limit_per_min: int = 6

@@ -216,6 +216,18 @@ class Draft(StrictModel):
     queries: list[str] = Field(default_factory=list, max_length=3)
 
 
+class DraftKey(StrictModel):
+    """Short answer the evidence read so far supports, used only to decide whether to keep reading."""
+    status: Literal['answered', 'insufficient_evidence', 'ambiguous']
+    short_answer: str = Field(default='', max_length=80)
+
+
+def answer_key(draft):
+    if draft.status != 'answered' or not draft.short_answer.strip():
+        return None
+    return re.sub(r'[\s.,;:!]+', ' ', draft.short_answer.casefold()).strip()
+
+
 class Verification(StrictModel):
     supported: bool
     conflicts: bool
@@ -412,6 +424,7 @@ class ReasoningQA:
         skipped_ids = []
         crop_cache = {}
         distinct_history = []
+        draft_keys = []
         observation_budget_exhausted = False
         scope_ids = []
         indexed_count = 0
@@ -442,7 +455,7 @@ class ReasoningQA:
             task = {'stage': stage, 'schema': schema.model_json_schema(), **data}
             issues = []
             allowed_fields = set().union(*(set(model.model_fields) for model in
-                (Plan, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, Verification,
+                (Plan, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
                  SearchRefinement)))
             for attempt in range(2):
                 calls += 1
@@ -634,7 +647,34 @@ class ReasoningQA:
                 # People move: at least 6 images, and the last two batches (4 images) added no new person.
                 return (len(observations) >= 6 and len(distinct_history) >= 3
                         and distinct_history[-1] == distinct_history[-3])
+            if stable_answer_mode():
+                return await answer_is_stable()
             return scene_evidence_settled(observations, plan)
+
+        def stable_answer_mode():
+            return getattr(self.service.settings, 'qa_early_stop_mode', 'rules') == 'stable_answer'
+
+        async def answer_is_stable():
+            """General stop test: two consecutive batches lead to the same short answer."""
+            if plan.operation in {'count_visible', 'count_max', 'count_distinct_objects'} and plan.answer_scope != 'scene':
+                return False  # Per-image and corpus counts must read every image.
+            matching = [o for o in observations if o.context_match == 'yes']
+            key = None
+            if matching:
+                try:
+                    draft_key = await invoke('drafting', DraftKey, dict(
+                        question=plan.question, operation=plan.operation, answer_scope=plan.answer_scope,
+                        language=req.answer_language, observations=[o.model_dump() for o in matching],
+                        instructions='Give the answer these observations support right now as a short canonical '
+                                     'answer: a number, yes/no, or a few words, no explanation. Use '
+                                     'insufficient_evidence when they do not settle the question.'))
+                    key = answer_key(draft_key)
+                except Exception as exc:  # Optional optimisation: on any failure just keep reading.
+                    log.info('qa_draft_key_failed request_id=%s error=%s', rid, type(exc).__name__)
+            draft_keys.append(key)
+            stable = len(draft_keys) >= 2 and key is not None and draft_keys[-2] == key
+            log.info('qa_draft_key request_id=%s read=%d key=%s stable=%s', rid, len(observations), key, stable)
+            return stable
 
         async def run():
             nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count
@@ -825,7 +865,10 @@ class ReasoningQA:
                     break
                 counting = (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
                             or any(s.field == 'visible_count' for s in plan.processing_steps))
-                batch_size = 2 if counting else 4
+                stable_reading = (stable_answer_mode() and not early_stop_disabled and not corpus_scan
+                                  and plan.question_type != 'temporal' and not req.image_id
+                                  and getattr(self.service.settings, 'qa_early_stop', True))
+                batch_size = 2 if counting or stable_reading else 4
                 engine = self.service.search_engine
                 detect_label = None
                 if counting and hasattr(engine, 'detect_candidates'):
