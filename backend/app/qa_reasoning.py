@@ -61,6 +61,33 @@ class Plan(StrictModel):
     clarification: str | None = None
 
 
+def solid_evidence(observation, plan):
+    """A match that settles the scene by itself: in context and every stated condition checked as met."""
+    if observation.context_match != 'yes':
+        return False
+    if any(check.status != 'met' for check in observation.checks):
+        return False
+    checked = {check.condition_id for check in observation.checks}
+    return len(checked) >= len(plan.known_conditions)
+
+
+def scene_evidence_settled(observations, plan):
+    """Whether more images of the same scene would not change a scene-level answer."""
+    matching = [o for o in observations if o.context_match == 'yes']
+    solid = [o for o in matching if solid_evidence(o, plan)]
+    if plan.operation == 'compare':
+        return len(solid) >= 2 or len(matching) >= 3
+    if plan.operation in {'count_visible', 'count_max', 'count_distinct_objects'}:
+        if plan.answer_scope != 'scene':
+            return False  # Per-image and corpus counts must read every image.
+        if any(o.count_visibility == 'complete' and o.regions for o in solid):
+            return True
+        complete = [len(o.regions) for o in matching if o.count_visibility == 'complete' and o.regions]
+        return len(complete) >= 2 and len(set(complete)) == 1
+    # describe/find: one fully checked match, or two independent matches agreeing on the scene.
+    return bool(solid) or len(matching) >= 2
+
+
 def uses_detector_regions(plan):
     return bool(plan and (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
                           or any(step.field == 'visible_count' for step in plan.processing_steps)))
@@ -592,20 +619,22 @@ class ReasoningQA:
                 estimate = estimate_distinct_people(observations, self.service.search_engine.region_index,
                     float(getattr(self.service.settings, 'qa_distinct_similarity_threshold', .85)),
                     crop_vectors=crop_cache, category=plan.subject)
-                distinct_history.append(estimate['estimated_count'] if estimate else 0)
-                # At least 6 images, and the last two batches (4 images) added no new group.
+                count = estimate['estimated_count'] if estimate else 0
+                distinct_history.append(count)
+                if count <= 0:
+                    return False
+                if plan.operation == 'count_distinct_objects':
+                    # Furniture and appliances stay put in the same kitchen: one complete view that agrees
+                    # with the estimate, or one batch without a new group after 4 images, settles it.
+                    if len(observations) >= 2 and any(
+                            solid_evidence(o, plan) and o.count_visibility == 'complete' and len(o.regions) == count
+                            for o in observations):
+                        return True
+                    return len(observations) >= 4 and len(distinct_history) >= 2 and distinct_history[-1] == distinct_history[-2]
+                # People move: at least 6 images, and the last two batches (4 images) added no new person.
                 return (len(observations) >= 6 and len(distinct_history) >= 3
-                        and distinct_history[-1] == distinct_history[-3] and distinct_history[-1] > 0)
-            matching = [o for o in observations if o.context_match == 'yes']
-            if plan.operation == 'compare':
-                return len(matching) >= 2
-            if plan.operation in {'count_visible', 'count_max', 'count_distinct_objects'}:
-                if plan.answer_scope != 'scene':
-                    return False  # Per-image and corpus counts must read every image.
-                counts = [len(o.regions) for o in matching if o.regions]
-                return any(o.count_visibility == 'complete' and o.regions for o in matching) or (
-                    len(counts) >= 2 and len(set(counts)) == 1)
-            return bool(matching)
+                        and distinct_history[-1] == distinct_history[-3])
+            return scene_evidence_settled(observations, plan)
 
         async def run():
             nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count
@@ -872,7 +901,13 @@ class ReasoningQA:
                         rejected_count_ids.discard(old.image_id)
                 if (distinct_people and not observation_budget_exhausted and not stopped_early and not req.image_id
                         and len(seen) < min(distinct_top_k, len(retrieved)) and round_index + 1 < max_rounds):
-                    continue
+                    # Same stability test at the round boundary: do not open a new round for an estimate
+                    # that already stopped changing.
+                    if await enough_evidence(distinct_people, corpus_scan):
+                        stopped_early = True
+                        log.info('qa_early_stop request_id=%s read=%d skipped=round', rid, len(seen))
+                    else:
+                        continue
                 if plan.operation == 'count_max' or corpus_aggregate:
                     checked = {o.image_id for o in observations}
                     if set(scope_ids) - checked:

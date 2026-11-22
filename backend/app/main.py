@@ -447,14 +447,11 @@ async def get_task(request: Request):
     if not request.app.state.gateway.has_evaluation(session):
         return TaskResponse(running=False)
 
-    cached = None  # Task depends on the evaluation selected by this session.
-    if cached is not None:
-        return cached
-
+    evaluation_id = request.app.state.gateway.evaluation_id(session)
     task, server_time_ms = await request.app.state.gateway.current_task(_cookie(request))
 
     if task is None:
-        result = TaskResponse(running=False, server_time_ms=server_time_ms)
+        result = TaskResponse(running=False, server_time_ms=server_time_ms, evaluation_id=evaluation_id)
     else:
         result = TaskResponse(
             running=True,
@@ -463,6 +460,7 @@ async def get_task(request: Request):
             task_type=task.task_type,
             duration_s=task.duration_s,
             server_time_ms=server_time_ms,
+            evaluation_id=evaluation_id,
         )
     request.app.state.task_cache.set(result)
     return result

@@ -196,6 +196,8 @@ class TaskResponse(BaseModel):
     task_type: str | None = None
     duration_s: int | None = None
     server_time_ms: int | None = None
+    # Evaluation this session submits to (chosen Run ID, DRES_EVALUATION_ID, or the demo evaluation).
+    evaluation_id: str | None = None
 
 
 class ErrorResponse(BaseModel):

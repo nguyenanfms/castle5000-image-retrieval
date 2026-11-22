@@ -203,6 +203,9 @@
     loginView.hidden = false;
     searchView.hidden = true;
     statusbar.hidden = true;
+    // A demo session's evaluation must not carry over to a real login.
+    selectedEvaluationId = "";
+    if (qaEvaluation) qaEvaluation.value = "";
     loadLoginModes();
   }
 
@@ -660,13 +663,10 @@
           showPlanStatus();
         } catch (err) {
           if (err.status === 401) throw err;
-          setThinking("plan", "error", err.message);
-          for (const key of ["search", "filter", "verify", "zoom"]) setThinking(key, "skip", "");
-          setPlan(language === "en" ? query : "");
-          renderWorkflow("plan-error");
-          showPlanEditor(true);
-          $("search-global").focus();
-          return;
+          // The whole-image model reads Vietnamese too: search with the typed sentence instead of stopping.
+          setThinking("plan", "error", `${err.message} Tìm thẳng bằng câu gốc, không tách cụm.`);
+          setPlan(query);
+          planKey = key;
         }
       }
       followWorkflow = true;
@@ -699,7 +699,7 @@
       searchMeta.textContent = "";
       renderResults([]);
       if (!thinking || action !== "plan") startThinking(false);
-      setThinking("search", "active", "CLIP toàn ảnh, rồi RegionCLIP đối chiếu từng cụm…");
+      setThinking("search", "active", "Tìm theo toàn ảnh, rồi đối chiếu từng cụm theo vùng…");
       const response = await api("/api/search", {
         method: "POST",
         body: JSON.stringify({ query, detail_queries: detailQueries, conditions, mode: "clip_region", k: Number(searchLimit.value) }),
@@ -747,7 +747,7 @@
         return;
       }
       if (currentPlanKey() !== planKey && !preparedPlan) {
-        setPlan(searchLanguage.value === "en" ? queryInput.value.trim() : "");
+        setPlan(queryInput.value.trim());
       }
       showPlanEditor(true);
       $("search-global").focus();
@@ -2902,6 +2902,44 @@
     return s.replace(/["\\]/g, "\\$&");
   }
 
+  // Header chip + hint under the submit button: which evaluation, which task, and why submitting is blocked.
+  function renderTaskStatus(task, error) {
+    const picker = $("run-picker");
+    const status = $("task-status");
+    const hint = $("submit-hint");
+    if (!picker || !status) return;
+    // The server already submits to DRES_EVALUATION_ID or the demo evaluation; adopt it.
+    if (task?.evaluation_id && !selectedEvaluationId) {
+      selectedEvaluationId = task.evaluation_id;
+      if (qaEvaluation && !qaEvaluation.value) qaEvaluation.value = task.evaluation_id;
+    }
+    const run = selectedEvaluationId
+      ? (selectedEvaluationId.length > 12 ? selectedEvaluationId.slice(0, 8) + "…" : selectedEvaluationId)
+      : "";
+    let text, state, reason = "";
+    if (error) {
+      text = run ? `Buổi thi ${run} · lỗi DRES` : "Không kết nối được DRES";
+      state = "missing";
+      reason = error;
+    } else if (!selectedEvaluationId) {
+      text = "Chưa chọn buổi thi";
+      state = "missing";
+      reason = "Chưa chọn buổi thi: bấm “Chưa chọn buổi thi” ở góc trên để nhập Run ID.";
+    } else if (!task?.running) {
+      text = `Buổi thi ${run} · chưa có task`;
+      state = "idle";
+      reason = "Buổi thi chưa có task đang chạy.";
+    } else {
+      const duration = task.duration_s ? ` · ${Math.round(task.duration_s / 60)} phút` : "";
+      text = `${task.name || "Task"} · ${task.task_type || "?"}${duration}`;
+      state = "running";
+    }
+    status.textContent = text;
+    status.title = `${selectedEvaluationId ? "Run ID: " + selectedEvaluationId : "Chưa chọn buổi thi"} — bấm để đổi`;
+    picker.dataset.state = state;
+    if (hint) hint.textContent = reason;
+  }
+
   async function pollTask() {
     if (localQaMode) {
       setSearchEnabled(true);
@@ -2911,6 +2949,7 @@
       const task = await api("/api/task");
       taskRunning = task.running;
       currentTaskType = task.task_type;
+      renderTaskStatus(task);
       if (selectedEvaluationId) {
         qaEvaluationStatus.textContent = task.running
           ? `Task: ${task.name || ""} · ${task.task_type || "Chưa rõ loại"}`
@@ -2925,6 +2964,7 @@
         return;
       }
       // DRES unreachable or no evaluation configured: fail soft, keep retrying.
+      renderTaskStatus(null, err.message || "Không kết nối được DRES");
       submitBtn.disabled = true;
       taskRunning = false;
       currentTaskType = null;
@@ -2959,7 +2999,8 @@
       qaEvaluation.value = id;
       qaEvaluationStatus.textContent = "Đã chọn buổi thi. Đang kiểm tra task…";
       await pollTaskOnce();
-      $("evaluation-message").textContent = `Đã chọn buổi thi: ${id}. Chờ kiểm tra task đang chạy.`;
+      $("evaluation-message").textContent = `Đã chọn buổi thi: ${id}.`;
+      $("run-picker").open = false;
     } catch (err) {
       $("evaluation-message").textContent = err.message;
     } finally {
@@ -2972,6 +3013,8 @@
       const task = await api("/api/task");
       taskRunning = task.running;
       currentTaskType = task.task_type;
+      renderTaskStatus(task);
+      submitBtn.disabled = !task.running || !selectedEvaluationId;
       qaEvaluationStatus.textContent = task.running
         ? `Task: ${task.name || ""} · ${task.task_type || "Chưa rõ loại"}`
         : "Chưa có task đang chạy.";

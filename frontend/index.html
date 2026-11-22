@@ -6,7 +6,7 @@
   <title>Castle Search</title>
   <meta name="page-type" content="software" />
   <meta name="site-kind" content="software" />
-  <link rel="stylesheet" href="/style.css?v=castle-search-unified-17" />
+  <link rel="stylesheet" href="/style.css?v=castle-search-unified-28" />
 </head>
 <body>
   <main>
@@ -49,6 +49,16 @@
         </div>
         <div class="statusbar" id="statusbar" aria-label="Tài khoản" hidden>
           <span id="session-mode" class="session-mode-badge" hidden></span>
+          <details class="competition-settings run-picker" id="run-picker">
+            <summary id="task-status" title="Buổi thi và task trên DRES">Chưa chọn buổi thi</summary>
+            <div class="run-picker-panel">
+              <label>Run ID / Evaluation ID
+                <input id="evaluation-id-input" type="text" placeholder="Dán mã Run ID hoặc đường dẫn Viewer từ DRES" />
+              </label>
+              <button id="apply-evaluation-id" type="button">Dùng mã này</button>
+              <p id="evaluation-message">Nhập Run ID khi muốn nộp ảnh vào cuộc thi.</p>
+            </div>
+          </details>
           <span id="user-name"></span>
           <button id="logout-btn">Đăng xuất</button>
         </div>
@@ -143,7 +153,7 @@
         </div>
         <div id="search-plan-editor" hidden>
           <form id="search-plan-form">
-            <label>Mô tả toàn cảnh bằng tiếng Anh
+            <label>Mô tả toàn cảnh (tiếng Anh cho kết quả ổn định nhất)
               <textarea id="search-global" rows="2" maxlength="1200" required></textarea>
             </label>
             <div class="workflow-editor-head">
@@ -301,19 +311,11 @@
         </div>
       </section>
 
-      <details class="competition-settings"><summary>Buổi thi (Run ID)</summary>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
-        <label style="flex:1">Run ID / Evaluation ID
-          <input id="evaluation-id-input" type="text" placeholder="Dán mã Run ID hoặc đường dẫn Viewer từ DRES" style="width:100%;min-width:160px" />
-        </label>
-        <button id="apply-evaluation-id" type="button">Dùng mã này</button>
-      </div>
-      <p id="evaluation-message">Nhập Run ID khi muốn nộp ảnh vào cuộc thi.</p>
-      </details>
       <div class="lightbox-actions">
         <button id="submit-btn" disabled>Submit ảnh này</button>
         <button id="close-lightbox-btn">Đóng</button>
       </div>
+      <p id="submit-hint" class="submit-hint competition-settings"></p>
       <p id="submit-result"></p>
       </div>
     </div>
@@ -327,6 +329,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=castle-search-unified-26"></script>
+  <script src="/app.js?v=castle-search-unified-28"></script>
 </body>
 </html>
