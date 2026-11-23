@@ -45,6 +45,7 @@ output/
 /docs/*
 !/docs/QA_EVIDENCE_FLOW.md
 !/docs/so-do-he-thong/
+!/docs/NHAT_KY_2026-11-23.md
 /experiments/
 /notebooks/
 /backend/tests/*
