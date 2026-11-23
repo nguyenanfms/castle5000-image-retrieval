@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -350,12 +351,18 @@ class RosterPerson(StrictModel):
 
 
 def loose_box(value):
-    """[x1, y1, x2, y2] as floats when the model wrote numbers (or numeric strings); None otherwise."""
+    """A display box for a roster person: normalized [x1, y1, x2, y2], or None. Unlike counting boxes, a box on
+    Gemini's usual 0-1000 scale is rescaled (it only crops a thumbnail, it never changes a count)."""
+    box = repair_box(value)
+    if box is not None:
+        return box
     try:
-        box = [float(v) for v in value] if isinstance(value, (list, tuple)) and len(value) == 4 else None
+        values = [float(v) for v in value] if isinstance(value, (list, tuple)) and len(value) == 4 else None
     except (TypeError, ValueError):
         return None
-    return box
+    if values and all(0 <= v <= 1000 for v in values) and max(values) > 1.02:
+        return repair_box([v / 1000 for v in values])
+    return None
 
 
 class PersonMatch(StrictModel):
@@ -696,7 +703,42 @@ class ReasoningQA:
 
         scene_choices = {}
 
+        def roster_cache_file():
+            base = getattr(self.service.settings, 'image_metadata_dir', None)
+            return Path(base).parent / 'qa-people-roster.json' if base else None
+
+        def roster_cache_key(scope_ids, limit):
+            store = self.service.search_engine.image_metadata
+            manifest = getattr(store, 'manifest', {}) or {}
+            digest = hashlib.sha256('\n'.join(sorted(scope_ids)).encode()).hexdigest()[:16]
+            return f"roster-v4|{manifest.get('ids_sha256', '')}|{manifest.get('normalization', '')}|{digest}|{limit}"
+
         async def people_roster(scope_ids):
+            limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 24)), 32))
+            cache_file, key = roster_cache_file(), roster_cache_key(scope_ids, limit)
+            try:
+                saved = json.loads(cache_file.read_text(encoding='utf-8')) if cache_file and cache_file.exists() else {}
+            except (OSError, ValueError):
+                saved = {}
+            if key in saved:
+                hit = saved[key]
+                for entry in hit['entries']:
+                    if entry.get('box'):
+                        output_regions.setdefault(entry['image_id'], []).append(QARegion(label=entry['label'], box=entry['box']))
+                log.info('qa_roster_cached request_id=%s people=%d', rid, hit['count'])
+                return (hit['count'], [QAClaim(**c) for c in hit['claims']], hit['frames'], hit['most'], hit['entries'])
+            result = await compute_people_roster(scope_ids, limit)
+            if result is not None and cache_file is not None:
+                count, claims, frames, most, entries = result
+                saved[key] = dict(count=count, claims=[c.model_dump() for c in claims], frames=frames, most=most,
+                                  entries=entries)
+                try:
+                    cache_file.write_text(json.dumps(saved, ensure_ascii=False), encoding='utf-8')
+                except OSError as exc:
+                    log.warning('qa_roster_cache_unwritable path=%s error=%s', cache_file, exc)
+            return result
+
+        async def compute_people_roster(scope_ids, limit):
             """Everyone who takes part: frames chosen from the metadata of every image (the most crowded one,
             then one per frequent clothing group) are shown together, and the model lists each distinct
             person once with the frames where that person appears."""
@@ -704,7 +746,6 @@ class ReasoningQA:
             store = engine.image_metadata
             allowed = set(scope_ids)
             ordered_ids = [x for x in engine.vector_index.ids if x in allowed]
-            limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 24)), 32))
             frames = coverage_frames(store, ordered_ids, limit)
             if len(frames) < 2:
                 return None
@@ -759,11 +800,15 @@ class ReasoningQA:
                                           box=p.box), frame)
                             for p in found.people if p.same_as.strip().casefold() not in labels]
 
+                # Each comparison sometimes misses a newcomer, and runs differ: two independent passes are
+                # combined (the merge below removes the duplicates this creates).
+                passes = max(1, int(getattr(self.service.settings, 'qa_roster_passes', 2)))
+                jobs = [f for _ in range(passes) for f in others]
                 try:
                     asyncio.get_running_loop()
-                    batches = await asyncio.gather(*(newcomers(f) for f in others))
+                    batches = await asyncio.gather(*(newcomers(f) for f in jobs))
                 except RuntimeError:  # synchronous driver (tests)
-                    batches = [await newcomers(f) for f in others]
+                    batches = [await newcomers(f) for f in jobs]
                 candidates = [item for batch in batches for item in batch]
 
                 # 3. The same newcomer can appear in several frames: group the candidates.
@@ -799,7 +844,7 @@ class ReasoningQA:
                       for p, ids in people]
             entries = []
             for number, (p, ids) in enumerate(people, 1):
-                box = p.box if is_valid_normalized_box(p.box) and (p.image_ids or [None])[0] == ids[0] else None
+                box = p.box if p.box and is_valid_normalized_box(p.box) and (p.image_ids or [None])[0] == ids[0] else None
                 entries.append(dict(label=f'P{number}', appearance=p.appearance, image_id=ids[0],
                                     image_ids=ids, box=box))
                 if box is not None:

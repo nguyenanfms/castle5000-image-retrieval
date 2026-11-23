@@ -307,6 +307,16 @@ class OpenAICompatibleQAClient(BaseQAClient):
         return data
 
 
+def quota_cooldown(resp) -> float:
+    """Seconds to rest a key after HTTP 429: 1 hour for a used-up daily quota, else Google's retryDelay."""
+    text = resp.text or ""
+    delay = re.search(r'"retryDelay":\s*"(\d+)', text)
+    seconds = float(delay.group(1)) if delay else 60.0
+    if any("PerDay" in quota for quota in re.findall(r'"quotaId":\s*"([^"]+)"', text)) and seconds > 300:
+        return 3600.0
+    return min(max(seconds, 10.0), 300.0)
+
+
 class GeminiQAClient(BaseQAClient):
     """Adapter for native Google Gemini generateContent REST API."""
 
@@ -325,6 +335,7 @@ class GeminiQAClient(BaseQAClient):
         backups = [backup_api_key] if isinstance(backup_api_key, str) else list(backup_api_key or [])
         self._api_keys = [k for k in dict.fromkeys([self._api_key, *(b.strip() for b in backups)]) if k]
         self._key_cooldown_until = [0.0] * len(self._api_keys)
+        self._next_key = 0
         self._model = model.strip()
         self.model_version = self._model or "unconfigured"
         self._max_tokens = max_output_tokens
@@ -338,10 +349,14 @@ class GeminiQAClient(BaseQAClient):
         return bool(self._api_keys and self._model)
 
     def _key_order(self) -> list[int]:
-        """Keys not cooling down first, in configured order."""
+        """Keys not cooling down first. Each call starts at the next key (round robin), so parallel calls
+        spread over every key instead of all hitting the first one and its per-minute limit."""
         now = time.monotonic()
-        indexes = list(range(len(self._api_keys)))
-        return sorted(indexes, key=lambda i: (self._key_cooldown_until[i] > now, i))
+        count = len(self._api_keys)
+        start = self._next_key % count if count else 0
+        self._next_key += 1
+        indexes = [(start + i) % count for i in range(count)]
+        return sorted(indexes, key=lambda i: self._key_cooldown_until[i] > now)
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -446,8 +461,9 @@ class GeminiQAClient(BaseQAClient):
             if resp.status_code not in (429, 503):
                 break
             if resp.status_code == 429:
-                # Quota exhausted: skip this key for a while instead of failing every call.
-                self._key_cooldown_until[key_index] = time.monotonic() + 600
+                # Skip this key for as long as Google asks: the day's quota is long, a per-minute
+                # limit is about a minute (retryDelay), so one burst does not sideline a key for 10 min.
+                self._key_cooldown_until[key_index] = time.monotonic() + quota_cooldown(resp)
             if position == len(order) - 1 or deadline - time.monotonic() < 3:
                 break
             logger.warning('gemini_key_fallback from_key=%d to_key=%d http=%d',
