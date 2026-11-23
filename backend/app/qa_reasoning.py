@@ -672,7 +672,7 @@ class ReasoningQA:
             store = engine.image_metadata
             allowed = set(scope_ids)
             ordered_ids = [x for x in engine.vector_index.ids if x in allowed]
-            limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 16)), 24))
+            limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 24)), 32))
             frames = coverage_frames(store, ordered_ids, limit)
             if len(frames) < 2:
                 return None
@@ -684,26 +684,63 @@ class ReasoningQA:
                 evidence[image_id] = bundle.items[0]
                 images.append(bundle.items[0])
             most = max(len(store.get(x).people) if store.get(x) else 0 for x in frames)
+            anchor, others = frames[0], frames[1:]
+            match_rule = ('Match people by face, hair, build, glasses and head-mounted camera first, clothing second; '
+                          'people turn, bend and move between frames, so the same person can look different. ')
             try:
-                result = await invoke('rostering', Roster, dict(
-                    question=plan.question, language=req.answer_language, frames=frames,
-                    instructions=(
-                        'All frames come from one fixed kitchen camera during one day. List every distinct '
-                        'person who appears in these frames exactly once. The same person keeps the same face, '
-                        'hair, build, glasses and head-mounted camera; clothing usually stays the same but '
-                        'match people mainly by face, hair and build. Do not count people on screens, photos '
-                        'or reflections. Include people only partly visible when they are clearly someone not '
-                        'already listed. For each person give a short label (P1, P2, ...), an appearance '
-                        'phrase in the answer language, and every listed frame id where that person is '
-                        'visible.')),
-                    images)
+                # 1. The most crowded frame: its people are certainly different people.
+                base = await invoke('rostering', Roster, dict(
+                    question=plan.question, language=req.answer_language, frames=[anchor],
+                    instructions=('List every distinct visible person in this one frame (not people on screens, '
+                                  'photos or reflections). Give each a label P1, P2, ..., an appearance phrase in '
+                                  'the answer language with face, hair, build, glasses or head camera, and clothing, '
+                                  'and image_ids=[the frame id].')), [evidence[anchor]])
+                listed = [(p, [anchor]) for p in base.people]
+                known = [dict(label=p.label, appearance=p.appearance) for p in base.people]
+
+                # 2. Every other frame next to the anchor: who here is not one of the listed people?
+                async def newcomers(frame):
+                    found = await invoke('rostering', Roster, dict(
+                        question=plan.question, language=req.answer_language, frames=[anchor, frame],
+                        listed_people=known,
+                        instructions=(f'The first image ({anchor}) shows the listed people. In the second image '
+                                      f'({frame}) find the people who are NOT any of the listed people. '
+                                      + match_rule + 'When you are not sure whether someone is already listed, '
+                                      'include them: a later step removes duplicates. Return only those people, '
+                                      f'each with a new label, an appearance phrase, and image_ids=["{frame}"]; '
+                                      'return an empty list when everyone in the second image is clearly listed.')),
+                        [evidence[anchor], evidence[frame]])
+                    return [(p, frame) for p in found.people]
+                try:
+                    asyncio.get_running_loop()
+                    batches = await asyncio.gather(*(newcomers(f) for f in others))
+                except RuntimeError:  # synchronous driver (tests)
+                    batches = [await newcomers(f) for f in others]
+                candidates = [item for batch in batches for item in batch]
+
+                # 3. The same newcomer can appear in several frames: group the candidates.
+                if candidates:
+                    shown = list(dict.fromkeys(frame for _, frame in candidates))[:10]
+                    merged = await invoke('rostering', Roster, dict(
+                        question=plan.question, language=req.answer_language, frames=[anchor] + shown,
+                        listed_people=known,
+                        candidates=[dict(id=f'C{i + 1}', frame=frame, appearance=p.appearance)
+                                    for i, (p, frame) in enumerate(candidates) if frame in shown],
+                        instructions=(f'The first image ({anchor}) shows the listed people. Each candidate is a '
+                                      'person seen in the given later frame. Drop every candidate who is one of '
+                                      'the listed people, and group candidates who are the same person seen in '
+                                      'several frames. ' + match_rule + 'Return one entry per remaining distinct '
+                                      'person (not the listed ones): a label, an appearance phrase, and image_ids '
+                                      '= the later frames where that person appears.')),
+                        [evidence[anchor]] + [evidence[f] for f in shown])
+                    listed += [(p, p.image_ids) for p in merged.people]
             except Exception as exc:  # the older per-crop estimate still runs
                 log.warning('qa_roster_failed request_id=%s error=%s', rid, getattr(exc, 'message', exc))
                 return None
             frame_set = set(frames)
             people = []
-            for person in result.people:
-                ids = [x for x in dict.fromkeys(person.image_ids) if x in frame_set]
+            for person, ids in listed:
+                ids = [x for x in dict.fromkeys(ids) if x in frame_set]
                 if ids:
                     people.append((person, ids))
             if len(people) < max(1, most - 1):

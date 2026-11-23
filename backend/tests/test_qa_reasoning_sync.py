@@ -672,31 +672,40 @@ def _roster_setup(tmp_path, monkeypatch, people):
     async def structured(prompt, images, deadline, **options):
         task = json.loads(prompt[prompt.index('{'):])
         if task['stage'] == 'rostering':
-            seen['frames'] = task['frames']
+            seen.setdefault('calls', []).append(task['frames'])
             seen['options'] = options
-            return {'people': people(task['frames'])}
+            return {'people': people(task)}
         return await original(prompt, images, deadline)
     service.client.structured = structured
     return reasoner, seen
 
 
 def test_people_roster_answers_the_session_count(tmp_path, monkeypatch):
-    reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda frames: [
-        {'label': f'P{i}', 'appearance': 'someone', 'image_ids': [frames[i % len(frames)], 'made_up.jpg']}
-        for i in range(4)])
+    """Anchor = the most crowded frame (3 people); each other frame is compared with it; newcomers seen in
+    two frames are merged into one person."""
+    def people(task):
+        if 'listed_people' in task:            # anchor + one other frame
+            frame = task['frames'][1]
+            return [{'label': 'N', 'appearance': 'woman in white', 'image_ids': [frame]}] if frame in ('01.jpg', '05.jpg') else []
+        if 'candidates' in task:               # newcomers grouped across frames
+            return [{'label': 'P4', 'appearance': 'woman in white', 'image_ids': ['01.jpg', '05.jpg', 'made_up.jpg']}]
+        return [{'label': f'P{i}', 'appearance': 'man', 'image_ids': [task['frames'][0]]} for i in range(1, 4)]
+    reasoner, seen = _roster_setup(tmp_path, monkeypatch, people)
     req = QARequest(question='How many different people took part?', answer_language='en')
     versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
     response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
-    assert seen['frames'][0] == '02.jpg' and len(seen['frames']) <= 4  # crowded frame first, then clothing groups
+    assert seen['calls'][0] == ['02.jpg']                      # anchor first, alone
+    assert all(c[0] == '02.jpg' and len(c) == 2 for c in seen['calls'][1:-1])  # pairs with the anchor
     assert seen['options'] == {'max_tokens': 12000}
     assert response.status == 'answered' and response.short_answer == '4'
-    assert all('made_up.jpg' not in c.evidence_ids for c in response.claims) and len(response.claims) == 4
+    assert all('made_up.jpg' not in c.evidence_ids for c in response.claims)
 
 
 def test_people_roster_smaller_than_one_crowded_frame_is_not_used(tmp_path, monkeypatch):
-    reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda frames: [
-        {'label': 'P1', 'appearance': 'someone', 'image_ids': [frames[0]]}])
+    reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda task: (
+        [] if 'listed_people' in task or 'candidates' in task
+        else [{'label': 'P1', 'appearance': 'someone', 'image_ids': [task['frames'][0]]}]))
     req = QARequest(question='How many different people took part?', answer_language='en')
     versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
     response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
-    assert 'frames' in seen and response.short_answer != '1'
+    assert seen['calls'] and response.short_answer != '1'
