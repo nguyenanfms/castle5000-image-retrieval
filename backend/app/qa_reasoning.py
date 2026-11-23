@@ -107,6 +107,14 @@ def scene_evidence_settled(observations, plan):
     return bool(solid) or len(matching) >= 2
 
 
+def is_people_subject(subject):
+    """'person', 'people', 'người', 'people in the kitchen', 'participants'...: the subject is people."""
+    if canonical_label(subject or '') == 'person':
+        return True
+    return bool(re.search(r"\b(?:people|persons?|men|women|man|woman|humans?|participants?|occupants?|"
+                          r"guests?|individuals?)\b|người", (subject or '').lower()))
+
+
 def same_event(a, b, seconds=14):
     """Two frames of the same hour at most `seconds` apart (frames are ~7 s apart): one event."""
     try:
@@ -957,7 +965,7 @@ class ReasoningQA:
                 # (metadata head count) for a maximum of people, the best metadata match otherwise.
                 metadata_store = getattr(engine, 'image_metadata', None)
                 matcher = getattr(engine, 'metadata_matcher', None)
-                if metadata_store is not None and plan.operation == 'count_max' and canonical_label(plan.subject) == 'person':
+                if metadata_store is not None and plan.operation == 'count_max' and is_people_subject(plan.subject):
                     def head_count(x):
                         meta = metadata_store.get(x)
                         return meta.people_count_estimate if meta is not None else -1
@@ -1428,8 +1436,9 @@ class ReasoningQA:
                     supported = True
                     conflicts = False
                     extra_queries = []
-                    verify_ids = ([o.image_id for o in observations] if metadata_ordered_max
-                                  # a metadata-ordered maximum read only the most crowded frames
+                    # A metadata-ordered maximum re-checks only the frames that reach it (the cited ones);
+                    # a full scan re-checks every frame of the scope.
+                    verify_ids = (source_ids if metadata_ordered_max
                                   else list(scope_ids) if plan.operation == 'count_max' or corpus_aggregate else source_ids)
                     for offset in range(0, len(verify_ids), 4):
                         ids = verify_ids[offset:offset+4]
