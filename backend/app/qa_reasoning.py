@@ -342,6 +342,16 @@ class RosterPerson(StrictModel):
     image_ids: list[str] = Field(min_length=1, max_length=24)
 
 
+class PersonMatch(StrictModel):
+    appearance: str = Field(default='', max_length=400)
+    same_as: str = Field(default='new', max_length=30)   # a listed label such as 'P3', or 'new'
+
+
+class FrameMatches(StrictModel):
+    """Every person visible in one frame, each matched to a listed person or marked new."""
+    people: list[PersonMatch] = Field(default_factory=list, max_length=40)
+
+
 class Roster(StrictModel):
     """Distinct people across a set of frames, each with the frames where that person appears."""
     people: list[RosterPerson] = Field(default_factory=list, max_length=80)
@@ -598,7 +608,7 @@ class ReasoningQA:
             issues = []
             allowed_fields = set().union(*(set(model.model_fields) for model in
                 (Plan, SearchCondition, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
-                 SearchRefinement, SceneChoice, Roster, RosterPerson)))
+                 SearchRefinement, SceneChoice, Roster, RosterPerson, FrameMatches, PersonMatch)))
             for attempt in range(2):
                 calls += 1
                 retry_prefix = ("The previous response failed validation. Regenerate the COMPLETE response for the same task and images, preserving image IDs and without guessing missing facts. " if attempt else "")
@@ -699,18 +709,25 @@ class ReasoningQA:
                 known = [dict(label=p.label, appearance=p.appearance) for p in base.people]
 
                 # 2. Every other frame next to the anchor: who here is not one of the listed people?
+                labels = {p.label.strip().casefold() for p in base.people}
+
                 async def newcomers(frame):
-                    found = await invoke('rostering', Roster, dict(
+                    meta = store.get(frame)
+                    checklist = [p.description for p in meta.people] if meta is not None else []
+                    found = await invoke('rostering', FrameMatches, dict(
                         question=plan.question, language=req.answer_language, frames=[anchor, frame],
-                        listed_people=known,
-                        instructions=(f'The first image ({anchor}) shows the listed people. In the second image '
-                                      f'({frame}) find the people who are NOT any of the listed people. '
-                                      + match_rule + 'When you are not sure whether someone is already listed, '
-                                      'include them: a later step removes duplicates. Return only those people, '
-                                      f'each with a new label, an appearance phrase, and image_ids=["{frame}"]; '
-                                      'return an empty list when everyone in the second image is clearly listed.')),
+                        listed_people=known, people_noted_in_second_image=checklist,
+                        instructions=(f'The first image ({anchor}) shows the listed people. Go through EVERY '
+                                      f'person visible in the second image ({frame}) one by one (the noted '
+                                      'people are an automatic list that can miss someone or be wrong). For each '
+                                      'person give an appearance phrase in the answer language and same_as = the '
+                                      'label of the listed person it is, or "new" when it is none of them. '
+                                      + match_rule + 'Say "new" when you are not sure: a later step removes '
+                                      'duplicates.')),
                         [evidence[anchor], evidence[frame]])
-                    return [(p, frame) for p in found.people]
+                    return [(RosterPerson(label='new', appearance=p.appearance or 'person', image_ids=[frame]), frame)
+                            for p in found.people if p.same_as.strip().casefold() not in labels]
+
                 try:
                     asyncio.get_running_loop()
                     batches = await asyncio.gather(*(newcomers(f) for f in others))

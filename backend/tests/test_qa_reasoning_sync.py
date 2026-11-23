@@ -684,9 +684,10 @@ def test_people_roster_answers_the_session_count(tmp_path, monkeypatch):
     """Anchor = the most crowded frame (3 people); each other frame is compared with it; newcomers seen in
     two frames are merged into one person."""
     def people(task):
-        if 'listed_people' in task:            # anchor + one other frame
+        if 'people_noted_in_second_image' in task:  # anchor + one other frame: match every person
             frame = task['frames'][1]
-            return [{'label': 'N', 'appearance': 'woman in white', 'image_ids': [frame]}] if frame in ('01.jpg', '05.jpg') else []
+            return ([{'appearance': 'woman in white', 'same_as': 'new'}, {'appearance': 'man', 'same_as': 'P1'}]
+                    if frame in ('01.jpg', '05.jpg') else [{'appearance': 'man', 'same_as': 'P2'}])
         if 'candidates' in task:               # newcomers grouped across frames
             return [{'label': 'P4', 'appearance': 'woman in white', 'image_ids': ['01.jpg', '05.jpg', 'made_up.jpg']}]
         return [{'label': f'P{i}', 'appearance': 'man', 'image_ids': [task['frames'][0]]} for i in range(1, 4)]
@@ -703,7 +704,7 @@ def test_people_roster_answers_the_session_count(tmp_path, monkeypatch):
 
 def test_people_roster_smaller_than_one_crowded_frame_is_not_used(tmp_path, monkeypatch):
     reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda task: (
-        [] if 'listed_people' in task or 'candidates' in task
+        [] if 'people_noted_in_second_image' in task or 'candidates' in task
         else [{'label': 'P1', 'appearance': 'someone', 'image_ids': [task['frames'][0]]}]))
     req = QARequest(question='How many different people took part?', answer_language='en')
     versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
