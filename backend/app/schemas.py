@@ -332,6 +332,8 @@ class QAResponse(BaseModel):
     short_answer: str | None = None
     # Distinct people found by the roster: label, appearance, the frame and box where each one is shown.
     people_roster: list[dict] = Field(default_factory=list)
+    # Pairs of roster people from different frames that may be one person (re-ID + attributes).
+    people_duplicates: list[dict] = Field(default_factory=list)
     reason_code: str | None = None
     message: str | None = None
     evidence: list[QAEvidenceItem] = Field(default_factory=list)

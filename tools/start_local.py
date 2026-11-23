@@ -132,6 +132,12 @@ def ensure_detector(env):
         env["DETECTION_MODEL_DIR"] = path
     except Exception as error:  # QA still answers; only person counts lose detector boxes.
         print(f"Grounding DINO unavailable ({error}); QA counts will rely on Gemini boxes only.", flush=True)
+    try:
+        from huggingface_hub import hf_hub_download
+        # OSNet-AIN re-ID weights (about 9 MB) for spotting a person listed twice; fetched here, not during a question.
+        hf_hub_download("LibreYOLO/LibreReID-osnet", "osnet_ain_x1_0.pt", cache_dir=str(Path(env["HF_HOME"]) / "hub"))
+    except Exception as error:
+        print(f"Re-ID weights unavailable ({error}); duplicate people are flagged by attributes only.", flush=True)
 
 
 def port_available(port):

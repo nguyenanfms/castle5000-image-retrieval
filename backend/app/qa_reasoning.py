@@ -41,6 +41,7 @@ from .schemas import QAClaim, QAEvidenceItem, QARegion, QAResponse, SearchCondit
 from .search_conditions import DETECTION_SCORE, canonical_label, distinct_detections, same_detection
 from .metadata_people import brief_metadata, coverage_frames
 from .metadata_rerank import rerank
+from .people_dedupe import suspected_duplicates
 from .qa_evidence import is_valid_normalized_box
 from .understanding import QA_RULES, retrieval_conditions, valid_conditions
 
@@ -532,6 +533,44 @@ class ReasoningQA:
             history.append(name)
         self.progress[owner, cid] = dict(stage=name, stages=history[-100:], request_id=rid, expires=time.monotonic()+1800, **images)
         log.info('qa_stage request_id=%s stage=%s', rid, name)
+
+    def _roster_duplicates(self, entries):
+        """Suspected duplicate people (different frames) by re-ID on the crops plus appearance attributes.
+        A pair is merged only when both signals agree strongly; the rest are listed for a person to check."""
+        settings = self.service.settings
+        if not getattr(settings, 'qa_people_dedupe', False) or len(entries) < 2:
+            return []
+        try:
+            if getattr(self, '_reid', None) is None:
+                from .reid_osnet import ReidEmbedder
+                self._reid = ReidEmbedder()
+            from PIL import Image
+            images_dir = Path(getattr(settings, 'images_dir', '.'))
+            vectors = []
+            for entry in entries:
+                box = entry.get('box')
+                if not box:
+                    vectors.append(None)
+                    continue
+                with Image.open(images_dir / entry['image_id']) as im:
+                    w, h = im.size
+                    crop = im.convert('RGB').crop((int(box[0] * w), int(box[1] * h), int(box[2] * w), int(box[3] * h)))
+                vectors.append(self._reid.embed([crop])[0])
+        except Exception as exc:  # re-ID is a check: without it, only attributes rank the pairs
+            log.warning('qa_reid_unavailable error=%s', exc)
+            vectors = [None] * len(entries)
+        pairs = suspected_duplicates(entries, vectors)
+        merged_b = set()
+        for pair in pairs:
+            strong = (pair['score'] >= 0.70 and (pair['reid'] or 0) >= 0.60 and pair['attributes'] >= 0.70)
+            pair['merged'] = bool(strong and pair['b'] not in merged_b and pair['a'] not in merged_b)
+            if pair['merged']:
+                merged_b.add(pair['b'])
+        boxes = {e['label']: (e['image_id'], e.get('box')) for e in entries}
+        for pair in pairs:
+            pair['a_image'], pair['a_box'] = boxes[pair['a']]
+            pair['b_image'], pair['b_box'] = boxes[pair['b']]
+        return pairs
 
     async def answer(self, req, owner, rid, deadline, versions):
         """One answer per conversation at a time: a new question cancels the unfinished previous one."""
@@ -1867,14 +1906,21 @@ class ReasoningQA:
             short_answer = f'{count} người' if vi else str(count)
             answer = (f'Có {count} người khác nhau xuất hiện trong {len(scope_ids)} ảnh đã kiểm duyệt.' if vi
                       else f'{count} distinct people appear across {len(scope_ids)} reviewed images.')
+        duplicates = []
         if roster is not None:
             count, claims, roster_frames, crowded, roster_entries = roster
+            duplicates = await asyncio.to_thread(self._roster_duplicates, roster_entries)
+            merged = {d['b'] for d in duplicates if d.get('merged')}
+            count -= len(merged)
             accepted = True
             partial = False
             short_answer = f'{count} người' if vi else str(count)
+            unsure = [d for d in duplicates if not d.get('merged')]
             answer = (f'Khoảng {count} người khác nhau tham gia. Gemini đối chiếu cùng lúc {len(roster_frames)} khung '
                       f'được chọn từ metadata của toàn bộ {len(scope_ids)} ảnh (khung đông nhất và mỗi nhóm trang phục '
                       f'một khung); khung đông nhất có {crowded} người cùng lúc. Người chỉ xuất hiện rất ít có thể bị sót.'
+                      + (f' Đã gộp {len(merged)} người trùng (re-ID và thuộc tính cùng khớp).' if merged else '')
+                      + (f' Còn {len(unsure)} cặp nghi trùng cần xem trong "Xem đối tượng".' if unsure else '')
                       if vi else
                       f'About {count} distinct people take part. Gemini compared {len(roster_frames)} frames chosen from '
                       f'the metadata of all {len(scope_ids)} images at once; the most crowded frame shows {crowded}. '
@@ -2010,6 +2056,7 @@ class ReasoningQA:
             status='answered' if accepted else ('ambiguous' if reason in {'missing_context', 'conflicting_evidence'} else 'insufficient_evidence'),
             answer=answer, short_answer=short_answer, message=None if accepted else message,
             people_roster=roster[4] if roster is not None else [],
+            people_duplicates=duplicates,
             identity_match_candidates=match_candidates,
             distinct_estimate=distinct_estimate,
             reason_code=None if accepted else reason, evidence=items, claims=claims, partial=partial,

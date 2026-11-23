@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     qa_roster_frames: int = Field(default=24, ge=4, le=32)
     # Independent comparison passes whose newcomers are combined (misses differ between runs).
     qa_roster_passes: int = Field(default=2, ge=1, le=3)
+    # Flag the same person listed twice (OSNet re-ID on the crops + appearance attributes; no model call).
+    qa_people_dedupe: bool = True
     # Image-reading calls run at the same time within one QA round (1 = one after another).
     qa_parallel_reads: int = Field(default=2, ge=1, le=4)
     search_plan_api_key: str = ""

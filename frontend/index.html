@@ -6,7 +6,7 @@
   <title>Castle Search</title>
   <meta name="page-type" content="software" />
   <meta name="site-kind" content="software" />
-  <link rel="stylesheet" href="/style.css?v=castle-search-unified-41" />
+  <link rel="stylesheet" href="/style.css?v=castle-search-unified-43" />
 </head>
 <body>
   <main>
@@ -236,11 +236,7 @@
           <h2 id="qa-retrieval-title">Ảnh truy xuất</h2>
           <p id="qa-retrieval-summary" aria-live="polite" hidden></p>
         </header>
-        <div class="qa-evidence-tabs" role="tablist" aria-label="Thông tin câu trả lời">
-          <button id="qa-images-tab" type="button" role="tab" aria-selected="true" aria-controls="qa-images-panel">Ảnh truy xuất</button>
-          <button id="qa-comparison-tab" type="button" role="tab" aria-selected="false" aria-controls="qa-comparison-panel" tabindex="-1">Ghép nhóm (cosine)</button>
-        </div>
-        <div id="qa-images-panel" class="qa-side-content" role="tabpanel" aria-labelledby="qa-images-tab">
+        <div id="qa-images-panel" class="qa-side-content">
           <p class="qa-legend" id="qa-legend" hidden>
             <span class="qa-image-state state-evidence">Bằng chứng</span> được dùng trong câu trả lời
             <span class="qa-image-state state-read">Đã đọc</span> mô hình đã xem
@@ -248,9 +244,6 @@
           </p>
           <div id="qa-retrieval-grid" class="qa-retrieval-grid"></div>
           <p id="qa-retrieval-empty" class="qa-retrieval-empty">Chưa có ảnh.</p>
-        </div>
-        <div id="qa-comparison-panel" class="qa-side-content qa-comparison-panel" role="tabpanel" aria-labelledby="qa-comparison-tab" hidden>
-          <p class="qa-retrieval-empty">Chưa có bước đối chiếu cho câu trả lời này.</p>
         </div>
       </aside>
       </section>
@@ -331,6 +324,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=castle-search-unified-41"></script>
+  <script src="/app.js?v=castle-search-unified-43"></script>
 </body>
 </html>
