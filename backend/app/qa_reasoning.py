@@ -336,6 +336,17 @@ class Draft(StrictModel):
     queries: list[str] = Field(default_factory=list, max_length=3)
 
 
+class RosterPerson(StrictModel):
+    label: str = Field(min_length=1, max_length=30)
+    appearance: str = Field(default='', max_length=400)
+    image_ids: list[str] = Field(min_length=1, max_length=24)
+
+
+class Roster(StrictModel):
+    """Distinct people across a set of frames, each with the frames where that person appears."""
+    people: list[RosterPerson] = Field(default_factory=list, max_length=80)
+
+
 class SceneChoice(StrictModel):
     """Which of several frames shows the described moment, judged by looking at them side by side."""
     image_id: str | None = None
@@ -543,6 +554,7 @@ class ReasoningQA:
         draft = None
         partial = False
         exact_people = None
+        roster = None  # (count, claims, frames, most in one frame) from the people roster
         reviewed_max = None
         rejected_count_ids = set()
         invalid_observation_ids = set()
@@ -586,7 +598,7 @@ class ReasoningQA:
             issues = []
             allowed_fields = set().union(*(set(model.model_fields) for model in
                 (Plan, SearchCondition, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
-                 SearchRefinement, SceneChoice)))
+                 SearchRefinement, SceneChoice, Roster, RosterPerson)))
             for attempt in range(2):
                 calls += 1
                 retry_prefix = ("The previous response failed validation. Regenerate the COMPLETE response for the same task and images, preserving image IDs and without guessing missing facts. " if attempt else "")
@@ -596,7 +608,13 @@ class ReasoningQA:
                     is_distinct = plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'}
                     reserve = (distinct_reserve_s if stage == 'observing' and is_distinct else
                                embedding_reserve_s if stage == 'verifying' and is_distinct else 0.0)
-                    raw = await self.service.client.structured(prompt, list(images), deadline - reserve)
+                    options = {'max_tokens': 12000} if stage == 'rostering' else {}
+                    try:
+                        raw = await self.service.client.structured(prompt, list(images), deadline - reserve, **options)
+                    except TypeError:
+                        if not options:
+                            raise
+                        raw = await self.service.client.structured(prompt, list(images), deadline - reserve)
                     if stage == 'observing':
                         raw = repair_observation_regions(raw)
                     try:
@@ -644,9 +662,64 @@ class ReasoningQA:
                 row for row in rows if row['label'] == label and row['score'] >= DETECTION_SCORE
             ])[:40]]
 
+        scene_choices = {}
+
+        async def people_roster(scope_ids):
+            """Everyone who takes part: frames chosen from the metadata of every image (the most crowded one,
+            then one per frequent clothing group) are shown together, and the model lists each distinct
+            person once with the frames where that person appears."""
+            engine = self.service.search_engine
+            store = engine.image_metadata
+            allowed = set(scope_ids)
+            ordered_ids = [x for x in engine.vector_index.ids if x in allowed]
+            limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 16)), 24))
+            frames = coverage_frames(store, ordered_ids, limit)
+            if len(frames) < 2:
+                return None
+            self.stage(owner, cid, 'observing', rid)
+            images = []
+            for image_id in frames:
+                bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
+                                                 image_id, plan.question, image_id, None, False)
+                evidence[image_id] = bundle.items[0]
+                images.append(bundle.items[0])
+            most = max(len(store.get(x).people) if store.get(x) else 0 for x in frames)
+            try:
+                result = await invoke('rostering', Roster, dict(
+                    question=plan.question, language=req.answer_language, frames=frames,
+                    instructions=(
+                        'All frames come from one fixed kitchen camera during one day. List every distinct '
+                        'person who appears in these frames exactly once. The same person keeps the same face, '
+                        'hair, build, glasses and head-mounted camera; clothing usually stays the same but '
+                        'match people mainly by face, hair and build. Do not count people on screens, photos '
+                        'or reflections. Include people only partly visible when they are clearly someone not '
+                        'already listed. For each person give a short label (P1, P2, ...), an appearance '
+                        'phrase in the answer language, and every listed frame id where that person is '
+                        'visible.')),
+                    images)
+            except Exception as exc:  # the older per-crop estimate still runs
+                log.warning('qa_roster_failed request_id=%s error=%s', rid, getattr(exc, 'message', exc))
+                return None
+            frame_set = set(frames)
+            people = []
+            for person in result.people:
+                ids = [x for x in dict.fromkeys(person.image_ids) if x in frame_set]
+                if ids:
+                    people.append((person, ids))
+            if len(people) < max(1, most - 1):
+                log.warning('qa_roster_too_small request_id=%s people=%d crowded=%d', rid, len(people), most)
+                return None
+            claims = [QAClaim(text=f'{p.label}: {p.appearance}'.strip(': '), evidence_ids=ids[:4])
+                      for p, ids in people]
+            log.info('qa_roster request_id=%s frames=%d people=%d crowded=%d', rid, len(frames), len(people), most)
+            return len(people), claims, frames, most
+
         async def choose_scene(contenders):
             """The frame that shows the described moment, chosen by comparing up to 4 frames at once."""
             ranked = rank_scene_matches(contenders, retrieved)[:4]
+            key = tuple(o.image_id for o in ranked)
+            if key in scene_choices:
+                return next((o for o in ranked if o.image_id == scene_choices[key]), None)
             try:
                 choice = await invoke('choosing', SceneChoice, dict(
                     question=plan.question, conditions=condition_data(), language=req.answer_language,
@@ -658,9 +731,10 @@ class ReasoningQA:
                         'Earlier readings can be wrong. Return image_id of that frame, or none_match=true '
                         'if no frame shows it. Do not count anything here.')),
                     [evidence[o.image_id] for o in ranked])
-            except QAClientError as exc:
+            except Exception as exc:  # the comparison only refines the choice; on any failure keep the old one
                 log.warning('qa_scene_choice_failed request_id=%s error=%s', rid, getattr(exc, 'message', exc))
                 return None
+            scene_choices[key] = None if choice.none_match else choice.image_id
             if choice.none_match:
                 return None
             return next((o for o in ranked if o.image_id == choice.image_id), None)
@@ -912,7 +986,7 @@ class ReasoningQA:
             return stable
 
         async def run():
-            nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count
+            nonlocal plan, draft, rounds, partial, reason, message, exact_people, reviewed_max, indexed_count, roster
             nonlocal scope_ids, people_candidate_count, corpus_aggregate, observation_budget_exhausted, stopped_early, early_stop_disabled, skipped_ids
             plan = await invoke('planning', Plan, dict(question=req.question, language=req.answer_language,
                 history=history, selected_image=req.image_id, scope=req.scope.model_dump() if req.scope else None,
@@ -1013,6 +1087,12 @@ class ReasoningQA:
                     exact_people = self.people.tally(scope_ids, vi=vi)
                     if exact_people is not None:
                         output_regions.update(exact_people[2])
+                        return
+                if (plan.operation == 'count_distinct_people' and not plan.known_conditions
+                        and getattr(self.service.settings, 'qa_people_roster', False)
+                        and getattr(engine, 'image_metadata', None) is not None):
+                    roster = await people_roster(scope_ids)
+                    if roster is not None:
                         return
                 if (plan.operation == 'count_max' and canonical_label(plan.subject) == 'person'
                         and not plan.known_conditions and self.people
@@ -1465,6 +1545,18 @@ class ReasoningQA:
                         draft = Draft(status='insufficient_evidence', queries=plan.queries)
                 elif plan.operation != 'count_max':
                     matching = [o for o in observations if o.context_match == 'yes']
+                    if (plan.answer_scope == 'scene' and plan.operation in ('describe', 'find')
+                            and not plan.processing_steps):
+                        # A question about one moment is answered from one frame: neighbouring frames of
+                        # the same event show other actions and objects, and mixing them gives a blend.
+                        contenders = [o for o in observations if o.context_match in ('yes', 'unclear')
+                                      and not any(c.status == 'violated' for c in o.checks)
+                                      and o.image_id in evidence]
+                        if len(contenders) > 1:
+                            chosen_moment = await choose_scene(contenders)
+                            if chosen_moment is not None:
+                                chosen_moment.context_match = 'yes'
+                                matching = [chosen_moment]
                     if not matching or (plan.operation == 'compare' and len(matching) < 2):
                         draft = Draft(status='insufficient_evidence', queries=plan.queries)
                     else:
@@ -1635,6 +1727,18 @@ class ReasoningQA:
             short_answer = f'{count} người' if vi else str(count)
             answer = (f'Có {count} người khác nhau xuất hiện trong {len(scope_ids)} ảnh đã kiểm duyệt.' if vi
                       else f'{count} distinct people appear across {len(scope_ids)} reviewed images.')
+        if roster is not None:
+            count, claims, roster_frames, crowded = roster
+            accepted = True
+            partial = False
+            short_answer = f'{count} người' if vi else str(count)
+            answer = (f'Khoảng {count} người khác nhau tham gia. Gemini đối chiếu cùng lúc {len(roster_frames)} khung '
+                      f'được chọn từ metadata của toàn bộ {len(scope_ids)} ảnh (khung đông nhất và mỗi nhóm trang phục '
+                      f'một khung); khung đông nhất có {crowded} người cùng lúc. Người chỉ xuất hiện rất ít có thể bị sót.'
+                      if vi else
+                      f'About {count} distinct people take part. Gemini compared {len(roster_frames)} frames chosen from '
+                      f'the metadata of all {len(scope_ids)} images at once; the most crowded frame shows {crowded}. '
+                      'People seen only rarely may be missed.')
         if reviewed_max is not None:
             maximum, winners = reviewed_max
             accepted = True
@@ -1645,7 +1749,8 @@ class ReasoningQA:
                                     else f'Image {image_id} has {maximum} reviewed people.'),
                               evidence_ids=[image_id]) for image_id in winners]
         cited = list(dict.fromkeys(x for c in claims for x in c.evidence_ids))
-        distinct_observation = bool(plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None)
+        distinct_observation = bool(plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'}
+                                    and exact_people is None and roster is None)
         if distinct_observation:
             cited = list(dict.fromkeys(cited + [o.image_id for o in observations if o.context_match == 'yes']))
         related_only = not accepted and reason in {'unverified_sequence', 'conflicting_evidence', 'verification_failed', 'provider_unavailable'}
@@ -1710,7 +1815,8 @@ class ReasoningQA:
                             source='reviewed_catalog' if exact_people is not None or reviewed_max is not None else 'visual_analysis')
         match_candidates = []
         distinct_estimate = None
-        if plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None:
+        if (plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'} and exact_people is None
+                and roster is None):
             engine = self.service.search_engine
             crop_vectors = {}
             if hasattr(engine, 'encode_image_crops'):

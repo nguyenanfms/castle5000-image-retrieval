@@ -648,3 +648,55 @@ def test_scene_count_compares_frames_when_the_true_one_is_left_unclear(tmp_path,
     assert 'choosing' in calls
     assert response.status == 'answered' and response.short_answer == '4 people'
     assert '01.jpg' in response.answer and '00.jpg (3)' in response.answer
+
+
+def _roster_setup(tmp_path, monkeypatch, people):
+    from app.image_metadata import ImageMetadata
+    reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 6, 128)
+    service.client.distinct_people = True
+    service.settings.qa_people_roster = True
+    service.settings.qa_roster_frames = 4
+    crowd = {'02.jpg': 3}
+    wear = {'00.jpg': 'red plaid shirt', '01.jpg': 'white top', '02.jpg': 'blue shirt', '03.jpg': 'grey sweater',
+            '04.jpg': 'red plaid shirt', '05.jpg': 'white top'}
+    records = {x: ImageMetadata.model_validate({'caption': 'k', 'people_count_estimate': crowd.get(x, 1),
+                'people': [{'description': 'man', 'upper_clothing': wear[x]}] * crowd.get(x, 1)}) for x in ids}
+    service.search_engine.image_metadata = SimpleNamespace(get=records.get)
+
+    async def search(query, k, detail=None):  # the older estimate's retrieval, used when the roster is rejected
+        return [{'id': x, 'score': 1.0} for x in ids], 0
+    service.search_engine.search = search
+    original = service.client.structured
+    seen = {}
+
+    async def structured(prompt, images, deadline, **options):
+        task = json.loads(prompt[prompt.index('{'):])
+        if task['stage'] == 'rostering':
+            seen['frames'] = task['frames']
+            seen['options'] = options
+            return {'people': people(task['frames'])}
+        return await original(prompt, images, deadline)
+    service.client.structured = structured
+    return reasoner, seen
+
+
+def test_people_roster_answers_the_session_count(tmp_path, monkeypatch):
+    reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda frames: [
+        {'label': f'P{i}', 'appearance': 'someone', 'image_ids': [frames[i % len(frames)], 'made_up.jpg']}
+        for i in range(4)])
+    req = QARequest(question='How many different people took part?', answer_language='en')
+    versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
+    response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
+    assert seen['frames'][0] == '02.jpg' and len(seen['frames']) <= 4  # crowded frame first, then clothing groups
+    assert seen['options'] == {'max_tokens': 12000}
+    assert response.status == 'answered' and response.short_answer == '4'
+    assert all('made_up.jpg' not in c.evidence_ids for c in response.claims) and len(response.claims) == 4
+
+
+def test_people_roster_smaller_than_one_crowded_frame_is_not_used(tmp_path, monkeypatch):
+    reasoner, seen = _roster_setup(tmp_path, monkeypatch, lambda frames: [
+        {'label': 'P1', 'appearance': 'someone', 'image_ids': [frames[0]]}])
+    req = QARequest(question='How many different people took part?', answer_language='en')
+    versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
+    response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
+    assert 'frames' in seen and response.short_answer != '1'

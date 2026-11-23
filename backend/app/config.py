@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     qa_use_kis_search: bool = True
     # Also run image search's image checks and close-ups inside QA (slower; QA reads the frames itself).
     qa_kis_verify: bool = False
+    # Whole-session people count: Gemini lists distinct people across frames chosen from the metadata.
+    qa_people_roster: bool = True
+    qa_roster_frames: int = Field(default=16, ge=4, le=24)
     # Image-reading calls run at the same time within one QA round (1 = one after another).
     qa_parallel_reads: int = Field(default=2, ge=1, le=4)
     search_plan_api_key: str = ""

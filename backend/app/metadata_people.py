@@ -86,9 +86,12 @@ def people_groups(store, ids, min_frames=15):
     return sorted(out, key=lambda g: -len(g.frames))
 
 
-def coverage_frames(store, ids, limit, min_frames=15):
+def coverage_frames(store, ids, limit, min_frames=None):
     """The most crowded frame, then one representative frame per frequent description group (most frequent
     groups first): together they show everyone who appears often."""
+    if min_frames is None:
+        # 15 frames (~2 minutes) over the whole day; fewer for a smaller scope such as one hour.
+        min_frames = max(1, min(15, len(ids) // 300))
     crowded = max_simultaneous(store, ids)[1]
     picks = [crowded] if crowded else []
     for g in people_groups(store, ids, min_frames):

@@ -406,6 +406,7 @@ class GeminiQAClient(BaseQAClient):
         deadline: float,
         response_schema: dict[str, Any] | None = None,
         thinking: str | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         if not self.is_ready():
             raise QAUnavailableError("Chưa cấu hình QA_API_KEY hoặc QA_MODEL cho Gemini")
@@ -430,7 +431,7 @@ class GeminiQAClient(BaseQAClient):
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "temperature": 0.0,
-                "maxOutputTokens": self._max_tokens,
+                "maxOutputTokens": max(self._max_tokens, max_tokens or 0),
                 "responseMimeType": "application/json",
                 # Enforced by Gemini when given: required fields are always present.
                 **({"responseSchema": response_schema} if response_schema else {}),
