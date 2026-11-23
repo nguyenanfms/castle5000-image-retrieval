@@ -2035,7 +2035,7 @@
       ? `${ids.length} ảnh tìm được · ${examined.size} ảnh đã đọc${confirmed ? ` · ${evidence.size} ảnh bằng chứng` : ""}`
       : turn ? (data.status === "error" ? "Truy xuất chưa hoàn tất." : data.status ? "Chưa có ảnh phù hợp." : "Đang tìm ảnh…") : "";
     $("qa-retrieval-empty").hidden = Boolean(turn || pinnedPreview);
-    $("qa-legend").hidden = !turn || !ids.length;
+    $("qa-legend").hidden = true;  // the groups below name each state
     const grid = $("qa-retrieval-grid");
     // Per-image verdict from the reader (kept on the turn after the answer arrives).
     const verdict = new Map((data.observations || []).map(o => [o.image_id, o]));
@@ -2049,7 +2049,6 @@
     if (grid.dataset.contentKey === key) return;
     grid.dataset.contentKey = key;
     grid.replaceChildren();
-    $("qa-legend").hidden = true;
     const rank = new Map(ids.map((id, index) => [id, index]));
     const isEvidence = id => evidence.has(id) && (!confirmed || evidence.get(id).verification_status !== "unverified");
     const groups = pinnedPreview ? [["pinned", "Ảnh đang hỏi", ids, true]] : (() => {
