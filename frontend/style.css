@@ -1479,7 +1479,8 @@ li[data-state="skip"] .thinking-dot { background:transparent; border:1.5px dashe
 .qa-object-tile { display:flex; flex-direction:column; gap:4px; padding:4px; text-align:left; border:1px solid var(--border);
   border-radius:8px; background:var(--panel); cursor:pointer; min-width:0; }
 .qa-object-tile:hover { border-color:var(--accent); }
-.qa-object-tile svg, .qa-object-tile img { width:100%; aspect-ratio:3/4; object-fit:cover; border-radius:6px; background:var(--panel-tint); }
+.qa-object-tile svg { display:block; width:100%; height:170px; border-radius:6px; background:var(--panel-tint); }
+.qa-objects-note { margin:6px 0 0; font-size:11px; color:var(--muted); }
 .qa-object-tile span { font-size:11px; line-height:1.3; color:var(--muted); display:-webkit-box; -webkit-line-clamp:3;
   -webkit-box-orient:vertical; overflow:hidden; }
 .qa-object-tile b { color:var(--text); margin-right:3px; }

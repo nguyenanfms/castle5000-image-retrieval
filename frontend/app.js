@@ -1946,15 +1946,19 @@
   }
 
   function createObjectsPanel(resp) {
-    const items = answerObjects(resp);
+    // Only the cropped objects: an item without a box would show a whole frame, which says nothing.
+    const all = answerObjects(resp);
+    const items = all.filter(item => item.box);
+    const unboxed = all.length - items.length;
     const panel = document.createElement("details");
     panel.className = "qa-objects-panel";
     const title = document.createElement("summary");
     title.className = "qa-objects-btn";
     const people = resp.people_roster?.length;
-    title.textContent = items.length
-      ? `Xem đối tượng · ${items.length} ${people ? "người" : items.some(item => item.box) ? "vùng" : "ảnh"}`
-      : "Xem đối tượng · chưa có đối tượng nào được xác định";
+    const noun = people ? "người" : "đối tượng";
+    title.textContent = !items.length ? "Xem đối tượng · chưa có đối tượng nào được khoanh vùng"
+      : unboxed ? `Xem đối tượng · ${all.length} ${noun} (${items.length} có ảnh cắt)`
+      : `Xem đối tượng · ${items.length} ${noun}`;
     panel.appendChild(title);
     const grid = document.createElement("div");
     grid.className = "qa-objects-grid";
@@ -1963,15 +1967,7 @@
       tile.type = "button";
       tile.className = "qa-object-tile";
       tile.title = `${item.label} · ${item.imageId}${item.text ? `\n${item.text}` : ""}`;
-      if (item.box) {
-        tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0.12, outline: true, label: `${item.label} trong ${item.imageId}` }));
-      } else {
-        const img = document.createElement("img");
-        img.src = "/thumbs/" + encodeURIComponent(item.imageId);
-        img.alt = item.imageId;
-        img.loading = "lazy";
-        tile.appendChild(img);
-      }
+      tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0, label: `${item.label} trong ${item.imageId}` }));
       const caption = document.createElement("span");
       const name = document.createElement("b");
       name.textContent = item.label;
@@ -1984,6 +1980,12 @@
       grid.appendChild(tile);
     }
     panel.appendChild(grid);
+    if (unboxed) {
+      const note = document.createElement("p");
+      note.className = "qa-objects-note";
+      note.textContent = `${unboxed} ${people ? "người" : "đối tượng"} chưa có khung nên không hiện ảnh cắt; xem trong ảnh bằng chứng phía trên.`;
+      panel.appendChild(note);
+    }
     return panel;
   }
 
