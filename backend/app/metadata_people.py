@@ -86,20 +86,48 @@ def people_groups(store, ids, min_frames=15):
     return sorted(out, key=lambda g: -len(g.frames))
 
 
-def coverage_frames(store, ids, limit, min_frames=None):
-    """The most crowded frame, then one representative frame per frequent description group (most frequent
-    groups first): together they show everyone who appears often."""
+def coverage_frames(store, ids, limit, min_frames=None, clear=3):
+    """Frames that together show as many frequent clothing groups as possible, each person clearly.
+
+    The most crowded frame comes first (its people are certainly different people). Then, greedily, the frame
+    that adds the most groups not yet shown, counting only people not marked partly visible; ties go to the
+    frame with fewer people (larger, clearer people). One frame per group wasted frames on groups that are the
+    same person and on far or hidden people; this covers more people with the same number of frames."""
     if min_frames is None:
         # 15 frames (~2 minutes) over the whole day; fewer for a smaller scope such as one hour.
         min_frames = max(1, min(15, len(ids) // 300))
+    groups = people_groups(store, ids, min_frames)
+    wanted = {g.key[1:4] for g in groups}
+    seen_in = {}
+    for image_id in ids:
+        meta = store.get(image_id)
+        if meta is None:
+            continue
+        keys = set()
+        for person in meta.people:
+            key = signature(person)
+            if key is not None and key[1:4] in wanted and not person.partly_visible:
+                keys.add(key[1:4])
+        if keys:
+            seen_in[image_id] = (keys, len(meta.people))
     crowded = max_simultaneous(store, ids)[1]
     picks = [crowded] if crowded else []
-    for g in people_groups(store, ids, min_frames):
-        frame = g.representative()
-        if frame not in picks:
-            picks.append(frame)
-        if len(picks) >= limit:
-            break
+    shown = set(seen_in.get(crowded, (set(), 0))[0]) if crowded else set()
+    # Clear frames first (at most `clear` people, so each person is large), then any frame for groups that
+    # never appear in a clear one. Crowded frames alone covered every group but people were too small to match.
+    for most in (clear, None):
+        while len(picks) < limit:
+            best, gain = None, 0
+            for image_id, (keys, people) in seen_in.items():
+                if most is not None and people > most:
+                    continue
+                new = len(keys - shown)
+                if new > gain or (new == gain and new and best is not None and people < seen_in[best][1]):
+                    best, gain = image_id, new
+            if best is None or gain == 0:
+                break
+            picks.append(best)
+            shown |= seen_in[best][0]
     return picks
 
 

@@ -483,6 +483,7 @@ class ReasoningQA:
         # (owner, conversation) -> (request id, task) of the request currently allowed to answer.
         self.inflight = {}
         self.evidence_store = EvidenceStore(service.settings.qa_cache_size, service.settings.qa_cache_ttl_s)
+        self._roster_tasks = {}  # roster builds keep running after the question that started them times out
 
     def _clean(self):
         now = time.monotonic()
@@ -661,7 +662,7 @@ class ReasoningQA:
         reason = 'insufficient_evidence'
         message = 'Chưa tìm đủ bằng chứng để kết luận.' if req.answer_language == 'vi' else 'Insufficient evidence to conclude.'
 
-        async def invoke(stage, schema, data, images=()):
+        async def invoke(stage, schema, data, images=(), until=None):
             nonlocal calls
             self.stage(owner, cid, stage, rid)
             protocol = (
@@ -689,11 +690,11 @@ class ReasoningQA:
                                embedding_reserve_s if stage == 'verifying' and is_distinct else 0.0)
                     options = {'max_tokens': 12000} if stage == 'rostering' else {}
                     try:
-                        raw = await self.service.client.structured(prompt, list(images), deadline - reserve, **options)
+                        raw = await self.service.client.structured(prompt, list(images), (until or deadline) - reserve, **options)
                     except TypeError:
                         if not options:
                             raise
-                        raw = await self.service.client.structured(prompt, list(images), deadline - reserve)
+                        raw = await self.service.client.structured(prompt, list(images), (until or deadline) - reserve)
                     if stage == 'observing':
                         raw = repair_observation_regions(raw)
                     try:
@@ -751,7 +752,7 @@ class ReasoningQA:
             store = self.service.search_engine.image_metadata
             manifest = getattr(store, 'manifest', {}) or {}
             digest = hashlib.sha256('\n'.join(sorted(scope_ids)).encode()).hexdigest()[:16]
-            return f"roster-v4|{manifest.get('ids_sha256', '')}|{manifest.get('normalization', '')}|{digest}|{limit}"
+            return f"roster-v6|{manifest.get('ids_sha256', '')}|{manifest.get('normalization', '')}|{digest}|{limit}"
 
         async def people_roster(scope_ids):
             limit = max(4, min(int(getattr(self.service.settings, 'qa_roster_frames', 24)), 32))
@@ -767,7 +768,19 @@ class ReasoningQA:
                         output_regions.setdefault(entry['image_id'], []).append(QARegion(label=entry['label'], box=entry['box']))
                 log.info('qa_roster_cached request_id=%s people=%d', rid, hit['count'])
                 return (hit['count'], [QAClaim(**c) for c in hit['claims']], hit['frames'], hit['most'], hit['entries'])
-            result = await compute_people_roster(scope_ids, limit)
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:  # synchronous driver (tests): build in place
+                result = await compute_people_roster(scope_ids, limit)
+            else:
+                task = self._roster_tasks.get(key)
+                if task is None or (task.done() and (task.cancelled() or task.exception() or task.result() is None)):
+                    task = asyncio.ensure_future(compute_people_roster(scope_ids, limit))
+                    self._roster_tasks[key] = task
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), timeout=max(1.0, deadline - time.monotonic() - 8))
+                except (TimeoutError, asyncio.TimeoutError):
+                    return 'pending'
             if result is not None and cache_file is not None:
                 count, claims, frames, most, entries = result
                 saved[key] = dict(count=count, claims=[c.model_dump() for c in claims], frames=frames, most=most,
@@ -779,6 +792,19 @@ class ReasoningQA:
             return result
 
         async def compute_people_roster(scope_ids, limit):
+            roster_until = time.monotonic() + 900  # one-off work, not bounded by the question's time budget
+
+            async def patient(*args, **kwargs):
+                # Background work: a per-minute limit (429) or an overload (503) is waited out, not fatal.
+                for attempt in range(5):
+                    try:
+                        return await invoke(*args, **kwargs)
+                    except QAInvalidOutputError:
+                        raise
+                    except QAClientError:
+                        if attempt == 4 or time.monotonic() + 20 * (attempt + 1) > roster_until:
+                            raise
+                        await asyncio.sleep(20 * (attempt + 1))
             """Everyone who takes part: frames chosen from the metadata of every image (the most crowded one,
             then one per frequent clothing group) are shown together, and the model lists each distinct
             person once with the frames where that person appears."""
@@ -802,13 +828,13 @@ class ReasoningQA:
                           'people turn, bend and move between frames, so the same person can look different. ')
             try:
                 # 1. The most crowded frame: its people are certainly different people.
-                base = await invoke('rostering', Roster, dict(
+                base = await patient('rostering', Roster, until=roster_until, data=dict(
                     question=plan.question, language=req.answer_language, frames=[anchor],
                     instructions=('List every distinct visible person in this one frame (not people on screens, '
                                   'photos or reflections). Give each a label P1, P2, ..., an appearance phrase in '
                                   'the answer language with face, hair, build, glasses or head camera, and clothing, '
                                   'image_ids=[the frame id], and box = [ymin, xmin, ymax, xmax] around the whole '
-                                  'person on a 0-1000 scale.')), [evidence[anchor]])
+                                  'person on a 0-1000 scale.')), images=[evidence[anchor]])
                 listed = [(p, [anchor]) for p in base.people]
                 known = [dict(label=p.label, appearance=p.appearance) for p in base.people]
 
@@ -824,7 +850,7 @@ class ReasoningQA:
                 async def compare_with_anchor(frame):
                     meta = store.get(frame)
                     checklist = [p.description for p in meta.people] if meta is not None else []
-                    found = await invoke('rostering', FrameMatches, dict(
+                    found = await patient('rostering', FrameMatches, until=roster_until, data=dict(
                         question=plan.question, language=req.answer_language, frames=[anchor, frame],
                         listed_people=known, people_noted_in_second_image=checklist,
                         instructions=(f'The first image ({anchor}) shows the listed people. Go through EVERY '
@@ -836,7 +862,7 @@ class ReasoningQA:
                                       'on a 0-1000 scale. '
                                       + match_rule + 'Say "new" when you are not sure: a later step removes '
                                       'duplicates.')),
-                        [evidence[anchor], evidence[frame]])
+                        images=[evidence[anchor], evidence[frame]])
                     return [(RosterPerson(label='new', appearance=p.appearance or 'person', image_ids=[frame],
                                           box=p.box), frame)
                             for p in found.people if p.same_as.strip().casefold() not in labels]
@@ -855,7 +881,7 @@ class ReasoningQA:
                 # 3. The same newcomer can appear in several frames: group the candidates.
                 if candidates:
                     shown = list(dict.fromkeys(frame for _, frame in candidates))[:10]
-                    merged = await invoke('rostering', Roster, dict(
+                    merged = await patient('rostering', Roster, until=roster_until, data=dict(
                         question=plan.question, language=req.answer_language, frames=[anchor] + shown,
                         listed_people=known,
                         candidates=[dict(id=f'C{i + 1}', frame=frame, appearance=p.appearance, box=p.box)
@@ -867,7 +893,7 @@ class ReasoningQA:
                                       'person (not the listed ones): a label, an appearance phrase, image_ids '
                                       '= the later frames where that person appears, and box = the box of that '
                                       'person in image_ids[0] (copy it from the matching candidate).')),
-                        [evidence[anchor]] + [evidence[f] for f in shown])
+                        images=[evidence[anchor]] + [evidence[f] for f in shown])
                     listed += [(p, p.image_ids) for p in merged.people]
             except Exception as exc:  # the older per-crop estimate still runs
                 log.warning('qa_roster_failed request_id=%s error=%s', rid, getattr(exc, 'message', exc))
@@ -1270,8 +1296,16 @@ class ReasoningQA:
                 if (plan.operation == 'count_distinct_people' and not plan.known_conditions
                         and getattr(self.service.settings, 'qa_people_roster', False)
                         and getattr(engine, 'image_metadata', None) is not None):
-                    roster = await people_roster(scope_ids)
-                    if roster is not None:
+                    built = await people_roster(scope_ids)
+                    if built == 'pending':
+                        reason = 'roster_pending'
+                        message = ('Đang lập danh sách người trên toàn bộ ảnh (làm một lần, khoảng 3–6 phút). '
+                                   'Hãy hỏi lại sau vài phút; từ đó câu này trả lời ngay.' if vi else
+                                   'Building the list of people across all images (once, about 3-6 minutes). '
+                                   'Ask again in a few minutes; it will then answer at once.')
+                        return
+                    if built is not None:
+                        roster = built
                         return
                 if (plan.operation == 'count_max' and canonical_label(plan.subject) == 'person'
                         and not plan.known_conditions and self.people
