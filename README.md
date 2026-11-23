@@ -19,7 +19,7 @@ Chỉ tải hai gói cần cho bản hiện tại (khoảng 2,1 GB) thay vì m�
 ```powershell
 git lfs install
 $env:GIT_LFS_SKIP_SMUDGE = "1"
-git clone -b metadata-search-qa https://github.com/nguyenanfms/castle5000-image-retrieval.git
+git clone https://github.com/nguyenanfms/castle5000-image-retrieval.git
 Remove-Item Env:GIT_LFS_SKIP_SMUDGE
 cd castle5000-image-retrieval
 git lfs pull --include="runtime/castle5000-media.zip,runtime/castle5000-siglip2.zip"
@@ -30,13 +30,13 @@ git lfs ls-files --size
 
 ```sh
 git lfs install
-GIT_LFS_SKIP_SMUDGE=1 git clone -b metadata-search-qa https://github.com/nguyenanfms/castle5000-image-retrieval.git
+GIT_LFS_SKIP_SMUDGE=1 git clone https://github.com/nguyenanfms/castle5000-image-retrieval.git
 cd castle5000-image-retrieval
 git lfs pull --include="runtime/castle5000-media.zip,runtime/castle5000-siglip2.zip"
 git lfs ls-files --size
 ```
 
-`git lfs ls-files --size` phải cho thấy `castle5000-media.zip` (khoảng 1,4 GB) và `castle5000-siglip2.zip` (khoảng 0,7 GB) là tệp thật (dấu `*`). Nhánh `metadata-search-qa` chứa bản có SigLIP 2 và metadata; khi đã gộp vào `main` thì bỏ `-b metadata-search-qa`. Muốn tải cả bản cũ thì chạy `git lfs pull` không kèm `--include`.
+`git lfs ls-files --size` phải cho thấy `castle5000-media.zip` (khoảng 1,4 GB) và `castle5000-siglip2.zip` (khoảng 0,7 GB) là tệp thật (dấu `*`). Nhánh `main` chứa bản có SigLIP 2 và metadata. Muốn tải cả bản cũ thì chạy `git lfs pull` không kèm `--include`.
 
 ## 3. Cài và khởi động
 
