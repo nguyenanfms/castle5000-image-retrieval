@@ -1264,7 +1264,9 @@ class ReasoningQA:
                                    else 'The full image scope was not examined, so the maximum cannot be determined.')
                         return
                     needs_counts = plan.operation == 'count_max' or any(s.field == 'visible_count' for s in plan.processing_steps)
-                    if any(o.context_match == 'unclear' or
+                    # Crowded frames always hide someone; a metadata-ordered maximum reports the largest
+                    # count found as a lower bound instead of refusing.
+                    if not metadata_ordered_max and any(o.context_match == 'unclear' or
                            (o.context_match == 'yes' and needs_counts and o.count_visibility != 'complete')
                            for o in observations):
                         partial = True
@@ -1273,12 +1275,14 @@ class ReasoningQA:
                                    else 'Some image counts are uncertain, so the maximum cannot be determined.')
                         return
                 if plan.operation == 'count_max':
-                    if any(o.context_match != 'yes' for o in observations):
+                    counted = ([o for o in observations if o.context_match == 'yes' and o.regions]
+                               if metadata_ordered_max else observations)
+                    if not counted or (not metadata_ordered_max and any(o.context_match != 'yes' for o in observations)):
                         reason = 'incomplete_corpus_counts'
                         message = ('Có ảnh chưa được xác minh số lượng.' if vi else 'Some image counts remain unverified.')
                         return
-                    maximum = max(len(o.regions) for o in observations)
-                    winners = [o for o in observations if len(o.regions) == maximum]
+                    maximum = max(len(o.regions) for o in counted)
+                    winners = [o for o in counted if len(o.regions) == maximum]
                     if len(winners) > 12:
                         partial = True
                         reason = 'too_many_maximum_images'
@@ -1289,13 +1293,16 @@ class ReasoningQA:
                     claims = [Claim(text=(f'Ảnh {o.image_id} có {maximum} {noun}.' if vi
                                                else f'Image {o.image_id} contains {maximum} {noun}.'),
                                     evidence_ids=[o.image_id]) for o in winners]
-                    answer = ('Số lượng lớn nhất là ' if vi else 'The largest count is ') + str(maximum)
+                    at_least = metadata_ordered_max and any(o.count_visibility != 'complete' for o in winners)
+                    answer = (('Số lượng lớn nhất là ' if vi else 'The largest count is ')
+                              + (('ít nhất ' if vi else 'at least ') if at_least else '') + str(maximum))
                     answer += ('; ảnh: ' if vi else '; images: ') + ', '.join(o.image_id for o in winners) + '.'
                     if metadata_ordered_max:
                         answer += (f' Đã đếm lại trên {len(observations)} khung đông người nhất theo metadata của toàn bộ ảnh.'
                                    if vi else f' Recounted on the {len(observations)} most crowded frames by the metadata of every image.')
                     draft = Draft(status='answered', answer=answer, claims=claims,
-                                  short_answer=(f'{maximum} {noun}' if vi else str(maximum)))
+                                  short_answer=((('ít nhất ' if vi else 'at least ') if at_least else '')
+                                                + (f'{maximum} {noun}' if vi else str(maximum))))
                 if plan.question_type == 'temporal' and not self.catalog.records:
                     relevant = [o for o in observations if o.context_match == 'yes']
                     reason = 'unverified_sequence'
