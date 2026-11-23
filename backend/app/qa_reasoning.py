@@ -336,6 +336,13 @@ class Draft(StrictModel):
     queries: list[str] = Field(default_factory=list, max_length=3)
 
 
+class SceneChoice(StrictModel):
+    """Which of several frames shows the described moment, judged by looking at them side by side."""
+    image_id: str | None = None
+    none_match: bool = False
+    reason: str = Field(default='', max_length=300)
+
+
 class DraftKey(StrictModel):
     """Short answer the evidence read so far supports, used only to decide whether to keep reading."""
     status: Literal['answered', 'insufficient_evidence', 'ambiguous']
@@ -525,6 +532,7 @@ class ReasoningQA:
                 self.stage(owner, cid, 'done', rid)
                 return response
         observations = []
+        kis_confirmed = set()  # frames the image-search verifier confirmed for the described scene
         evidence = {}
         seen = set()
         searched = set()
@@ -578,7 +586,7 @@ class ReasoningQA:
             issues = []
             allowed_fields = set().union(*(set(model.model_fields) for model in
                 (Plan, SearchCondition, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
-                 SearchRefinement)))
+                 SearchRefinement, SceneChoice)))
             for attempt in range(2):
                 calls += 1
                 retry_prefix = ("The previous response failed validation. Regenerate the COMPLETE response for the same task and images, preserving image IDs and without guessing missing facts. " if attempt else "")
@@ -635,6 +643,27 @@ class ReasoningQA:
             return [row['box'] for row in distinct_detections([
                 row for row in rows if row['label'] == label and row['score'] >= DETECTION_SCORE
             ])[:40]]
+
+        async def choose_scene(contenders):
+            """The frame that shows the described moment, chosen by comparing up to 4 frames at once."""
+            ranked = rank_scene_matches(contenders, retrieved)[:4]
+            try:
+                choice = await invoke('choosing', SceneChoice, dict(
+                    question=plan.question, conditions=condition_data(), language=req.answer_language,
+                    frames=[dict(image_id=o.image_id, earlier_reading=o.observation) for o in ranked],
+                    instructions=(
+                        'These frames come from one fixed kitchen camera. Look at all of them together and '
+                        'pick the one frame that shows the described moment: every described person with '
+                        'the described clothing doing the described action, with the described objects. '
+                        'Earlier readings can be wrong. Return image_id of that frame, or none_match=true '
+                        'if no frame shows it. Do not count anything here.')),
+                    [evidence[o.image_id] for o in ranked])
+            except QAClientError as exc:
+                log.warning('qa_scene_choice_failed request_id=%s error=%s', rid, getattr(exc, 'message', exc))
+                return None
+            if choice.none_match:
+                return None
+            return next((o for o in ranked if o.image_id == choice.image_id), None)
 
         def metadata_note(image_id):
             """Short text from the image metadata for the reader (who is where, wearing and doing what)."""
@@ -751,6 +780,11 @@ class ReasoningQA:
                 partial = True
                 observation_budget_exhausted = True
                 return
+            for item in result:
+                # Image search already checked these frames requirement by requirement with close-ups;
+                # the reader skipping a condition must not demote them.
+                if item.image_id in kis_confirmed and item.context_match == 'unclear':
+                    item.context_match = 'yes'
             observations.extend(result)
             returned = {o.image_id for o in result}
             missing = [item for item in images if item.kind == 'full_image' and item.image_id not in returned]
@@ -1028,6 +1062,9 @@ class ReasoningQA:
                                   and getattr(self.service.search_engine, 'image_metadata', None) is not None
                                   and not req.image_id)
             rerank_cache = {}
+            kis_finder = (getattr(self.service, 'kis', None)
+                          if getattr(self.service.settings, 'qa_use_kis_search', False) and not req.image_id else None)
+            kis_cache = {}
             max_rounds = ((min(len(scope_ids), corpus_limit) + 7) // 8 if corpus_scan and not distinct_people
                           else (distinct_top_k + 7) // 8 if distinct_people else 3)
             if metadata_ordered_max:
@@ -1048,6 +1085,20 @@ class ReasoningQA:
                     candidates = [req.image_id] if not seen else []
                 elif previous_ids and not distinct_people:
                     candidates = [x for x in previous_ids if self.service.search_engine.has_id(x) and self.catalog.allowed(x, req.scope)]
+                elif kis_finder is not None and not distinct_people and queries:
+                    # The scene is found by image search (planner, region search with conditions and
+                    # metadata, verifier with close-ups); QA reads the confirmed frames first.
+                    description = '; '.join(dict.fromkeys(x for x in queries[:1] + plan.known_conditions if x.strip()))
+                    if description not in kis_cache:
+                        self.stage(owner, cid, 'kis', rid)
+                        kis_cache[description] = await kis_finder.find(description, req.answer_language)
+                    found = kis_cache[description]
+                    kis_confirmed.update(found.confirmed)
+                    self._progress(owner, cid, rid)['kis'] = {**found.plan, 'confirmed': sorted(found.confirmed),
+                                                             'rejected': sorted(found.rejected)}
+                    candidates = [x for x in found.ordered
+                                  if self.service.search_engine.has_id(x) and self.catalog.allowed(x, req.scope)]
+                    searched.update(candidates)
                 else:
                     ranked = []
                     for query in queries[:3]:
@@ -1333,12 +1384,31 @@ class ReasoningQA:
                               and o.context_match == 'yes' and (
                         o.count_visibility == 'complete' or
                         (o.count_visibility == 'partial' and o.regions))]
+                    chosen_scene = None
+                    if plan.answer_scope == 'scene' and not distinct_people:
+                        # Judged one by one, the reader can pass a loose frame and leave the true one
+                        # 'unclear' (it skipped a condition). When the plausible frames disagree on the
+                        # count, show them together and let the model pick the described moment.
+                        contenders = [o for o in observations if o.image_id not in rejected_count_ids
+                                      and o.context_match in ('yes', 'unclear') and o.regions
+                                      and not any(c.status == 'violated' for c in o.checks)
+                                      and o.image_id in evidence]
+                        if len({len(o.regions) for o in contenders}) > 1:
+                            chosen_scene = await choose_scene(contenders)
+                            if chosen_scene is not None:
+                                # Picked by looking at the frames together: that confirms the scene.
+                                chosen_scene.context_match = 'yes'
+                                usable = [chosen_scene]
+                                scene_alternatives = [(o.image_id, len(o.regions)) for o in
+                                                      rank_scene_matches(contenders, retrieved)
+                                                      if o is not chosen_scene
+                                                      and len(o.regions) != len(chosen_scene.regions)][:2]
                     if distinct_people:
                         # Each verified co-occurrence supplies a lower bound even when
                         # correspondences with other frames remain unresolved.
                         usable = [o for o in usable if o.regions]
                         usable = sorted(usable, key=lambda o: -len(o.regions))[:1]
-                    elif plan.answer_scope == 'scene' and len({len(o.regions) for o in usable}) > 1:
+                    elif chosen_scene is None and plan.answer_scope == 'scene' and len({len(o.regions) for o in usable}) > 1:
                         # One described moment needs one number: take the frame that fits the description
                         # best and name the other close frames, instead of asking which image to use.
                         matcher = getattr(self.service.search_engine, 'metadata_matcher', None)

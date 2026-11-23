@@ -598,3 +598,53 @@ def test_metadata_ordered_maximum_reads_crowded_frames_and_answers(tmp_path, mon
     assert observed[:2] == ['17.jpg', '05.jpg'] and len(set(observed)) <= 16
     assert response.status == 'answered' and response.short_answer == '3'
     assert '17.jpg' in response.answer
+
+
+def test_scene_count_compares_frames_when_the_true_one_is_left_unclear(tmp_path, monkeypatch):
+    """The 13_521 case: the true frame was read with the right count but left 'unclear' (a condition was
+    skipped) while a loose frame passed. Frames that disagree are compared side by side and the chosen
+    frame's count is the answer."""
+    reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 4, 128)
+    service.search_engine.search = None
+    calls = []
+
+    async def search(query, k, detail=None):
+        return [{'id': x, 'score': 1.0 - i / 10} for i, x in enumerate(ids)], 0
+    service.search_engine.search = search
+
+    async def structured(prompt, images, deadline):
+        task = json.loads(prompt[prompt.index('{'):])
+        stage = task['stage']
+        calls.append(stage)
+        if stage == 'planning':
+            return {'question': task['question'], 'question_type': 'scene_search', 'operation': 'count_visible',
+                    'answer_scope': 'scene', 'subject': 'person', 'information_needed': 'count',
+                    'known_conditions': ['man carrying a pot of broccoli'], 'queries': ['man carrying broccoli']}
+        if stage == 'observing':
+            out = []
+            for item in images:
+                if item.image_id == '00.jpg':   # loose frame: passes, 3 people
+                    out.append({'image_id': '00.jpg', 'context_match': 'yes', 'observation': 'three men',
+                                'checks': [{'condition_id': 1, 'status': 'met'}], 'count_visibility': 'complete',
+                                'regions': [{'label': f'P{i}', 'box': [.1 + .2 * i, .1, .2 + .2 * i, .9]} for i in range(3)]})
+                elif item.image_id == '01.jpg':  # true frame: right count, condition skipped
+                    out.append({'image_id': '01.jpg', 'context_match': 'unclear', 'observation': 'four people',
+                                'count_visibility': 'complete',
+                                'regions': [{'label': f'P{i}', 'box': [.05 + .2 * i, .1, .15 + .2 * i, .9]} for i in range(4)]})
+                else:
+                    out.append({'image_id': item.image_id, 'context_match': 'no', 'observation': 'other',
+                                'checks': [{'condition_id': 1, 'status': 'violated'}]})
+            return {'observations': out}
+        if stage == 'choosing':
+            assert {f['image_id'] for f in task['frames']} == {'00.jpg', '01.jpg'}
+            return {'image_id': '01.jpg'}
+        if stage == 'verifying':
+            return {'supported': True, 'conflicts': False}
+        raise AssertionError(stage)
+    service.client.structured = structured
+    req = QARequest(question='How many people are there when a man carries broccoli?', answer_language='en')
+    versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
+    response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
+    assert 'choosing' in calls
+    assert response.status == 'answered' and response.short_answer == '4 people'
+    assert '01.jpg' in response.answer and '00.jpg (3)' in response.answer

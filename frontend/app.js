@@ -2216,7 +2216,7 @@
     ["synthesizing", "Tổng hợp"], ["verifying", "Kiểm tra"], ["embedding", "Ghép nhóm"],
   ];
   // A draft answer between batches is part of reading the images.
-  const QA_STAGE_ALIAS = { scanning: "retrieving", ranking: "retrieving", drafting: "observing" };
+  const QA_STAGE_ALIAS = { scanning: "retrieving", ranking: "retrieving", kis: "retrieving", drafting: "observing", choosing: "observing" };
 
   function renderQaSteps(turn) {
     const seen = new Set(turn.stages.map(stage => QA_STAGE_ALIAS[stage] || stage));
@@ -3043,8 +3043,8 @@
           if (reqSeq !== retrievalQaSeq || progressFinished) return;
           renderQaProcessing(chatTurn, progress);
           const labels = lang === "en"
-            ? { planning: "Understanding question…", scanning: "Scanning the image catalog…", retrieving: "Finding images…", ranking: "Ranking candidates by metadata…", observing: "Examining evidence…", synthesizing: "Combining evidence…", drafting: "Trying a draft answer…", verifying: "Checking answer…" }
-            : { planning: "Đang hiểu câu hỏi…", scanning: "Đang rà danh mục ảnh…", retrieving: "Đang tìm ảnh…", ranking: "Đang xếp ứng viên theo metadata…", observing: "Đang đối chiếu…", synthesizing: "Đang tổng hợp…", drafting: "Đang thử câu trả lời nháp…", verifying: "Đang kiểm tra câu trả lời…" };
+            ? { planning: "Understanding question…", scanning: "Scanning the image catalog…", retrieving: "Finding images…", ranking: "Ranking candidates by metadata…", kis: "Finding the scene with image search…", choosing: "Comparing the closest frames…", observing: "Examining evidence…", synthesizing: "Combining evidence…", drafting: "Trying a draft answer…", verifying: "Checking answer…" }
+            : { planning: "Đang hiểu câu hỏi…", scanning: "Đang rà danh mục ảnh…", retrieving: "Đang tìm ảnh…", ranking: "Đang xếp ứng viên theo metadata…", kis: "Đang tìm cảnh bằng bộ tìm ảnh (KIS)…", choosing: "Đang so sánh các khung gần nhất…", observing: "Đang đối chiếu…", synthesizing: "Đang tổng hợp…", drafting: "Đang thử câu trả lời nháp…", verifying: "Đang kiểm tra câu trả lời…" };
           if (progress.stage === "embedding") labels.embedding = lang === "en" ? "Comparing object crops…" : "Đang so sánh các vùng đối tượng…";
           if (labels[progress.stage]) chatTurn.botText.textContent = labels[progress.stage];
           if (progress.image_ids?.length) {

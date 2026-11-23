@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     # verification picks its 4 frames from the top; QA reads its first batch from the top).
     search_metadata_rerank: bool = True
     qa_metadata_rerank: bool = True
+    # QA finds described scenes with the image-search pipeline (planner, region search, verifier).
+    qa_use_kis_search: bool = True
     # Image-reading calls run at the same time within one QA round (1 = one after another).
     qa_parallel_reads: int = Field(default=2, ge=1, le=4)
     search_plan_api_key: str = ""

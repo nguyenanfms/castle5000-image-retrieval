@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .qa_kis import KisFinder
 from .config import get_settings
 from .dres_client import DresClient
 from .gateway import DresGateway, GatewayError
@@ -116,6 +117,11 @@ async def lifespan(app: FastAPI):
         app.state.qa_service = None
     app.state.search_verifier = (SearchVerifier(settings, app.state.qa_service, app.state.search_engine)
                                  if app.state.qa_service is not None else None)
+    if app.state.qa_service is not None:
+        # QA uses the same scene search as image search (see qa_kis.py).
+        app.state.qa_service.kis = KisFinder(app.state.search_planner, app.state.search_engine,
+                                             app.state.search_verifier,
+                                             verify_images=settings.search_verify_images)
     app.state.verify_limiter = RateLimiter(settings.rate_limit_per_min)
     app.state.task_cache = _TaskCache()
     app.state.ready = True
