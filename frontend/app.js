@@ -1946,79 +1946,76 @@
   }
 
   function createObjectsPanel(resp) {
-    // Only the cropped objects: an item without a box would show a whole frame, which says nothing.
+    // One grid: each object as a tight crop. Duplicate checks live on the tiles: a merged person sits next
+    // to the person it repeats (marked "= P5"), a suspected pair carries a "nghi trùng" chip that lights
+    // up both tiles.
     const all = answerObjects(resp);
-    const items = all.filter(item => item.box);
-    const unboxed = all.length - items.length;
+    const pairs = resp.people_duplicates || [];
+    const mergedInto = new Map(pairs.filter(p => p.merged).map(p => [p.b, p.a]));
+    const suspects = new Map();
+    for (const pair of pairs.filter(p => !p.merged)) {
+      for (const [self, other] of [[pair.a, pair.b], [pair.b, pair.a]]) {
+        if (!suspects.has(self)) suspects.set(self, []);
+        suspects.get(self).push({ other, pair });
+      }
+    }
+    const boxed = all.filter(item => item.box);
+    const unboxed = all.length - boxed.length;
+    // keep each merged person right after the one it repeats
+    const order = boxed.filter(item => !mergedInto.has(item.label));
+    for (const item of boxed.filter(item => mergedInto.has(item.label))) {
+      const at = order.findIndex(other => other.label === mergedInto.get(item.label));
+      order.splice(at < 0 ? order.length : at + 1, 0, item);
+    }
+    const people = Boolean(resp.people_roster?.length);
+    const noun = people ? "người" : "đối tượng";
     const panel = document.createElement("details");
     panel.className = "qa-objects-panel";
     const title = document.createElement("summary");
     title.className = "qa-objects-btn";
-    const people = resp.people_roster?.length;
-    const noun = people ? "người" : "đối tượng";
-    title.textContent = !items.length ? "Xem đối tượng · chưa có đối tượng nào được khoanh vùng"
-      : unboxed ? `Xem đối tượng · ${all.length} ${noun} (${items.length} có ảnh cắt)`
-      : `Xem đối tượng · ${items.length} ${noun}`;
+    const facts = [`${all.length - mergedInto.size} ${noun}`];
+    if (mergedInto.size) facts.push(`gộp ${mergedInto.size} trùng`);
+    if (suspects.size) facts.push(`${pairs.length - mergedInto.size} cặp nghi trùng`);
+    if (unboxed) facts.push(`${unboxed} chưa có khung`);
+    title.textContent = boxed.length ? `Xem đối tượng · ${facts.join(" · ")}` : "Xem đối tượng · chưa có đối tượng nào được khoanh vùng";
     panel.appendChild(title);
     const grid = document.createElement("div");
     grid.className = "qa-objects-grid";
-    for (const item of items) {
-      const tile = document.createElement("button");
-      tile.type = "button";
-      tile.className = "qa-object-tile";
+    const tiles = new Map();
+    const highlight = (labels) => {
+      for (const [label, tile] of tiles) tile.classList.toggle("is-paired", labels.includes(label));
+    };
+    for (const item of order) {
+      const tile = document.createElement("div");
+      tile.className = "qa-object-tile" + (mergedInto.has(item.label) ? " is-duplicate" : "");
       tile.title = `${item.label} · ${item.imageId}${item.text ? `\n${item.text}` : ""}`;
-      tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0, label: `${item.label} trong ${item.imageId}` }));
+      const crop = document.createElement("button");
+      crop.type = "button";
+      crop.className = "qa-object-crop";
+      crop.setAttribute("aria-label", `Mở ${item.label} trong ${item.imageId}`);
+      crop.appendChild(regionSvg(item.imageId, item.box, { pad: 0, label: `${item.label} trong ${item.imageId}` }));
+      crop.addEventListener("click", (event) => { event.stopPropagation(); openLightbox(item.imageId, null, item.ev); });
       const caption = document.createElement("span");
+      caption.className = "qa-object-caption";
       const name = document.createElement("b");
-      name.textContent = item.label;
+      name.textContent = mergedInto.has(item.label) ? `${item.label} = ${mergedInto.get(item.label)}` : item.label;
       caption.append(name, item.text ? ` ${item.text}` : "");
-      tile.appendChild(caption);
-      tile.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openLightbox(item.imageId, null, item.ev);
-      });
+      tile.append(crop, caption);
+      for (const { other, pair } of suspects.get(item.label) || []) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "qa-dup-chip";
+        chip.textContent = `nghi trùng ${other}`;
+        chip.title = `re-ID ${pair.reid ?? "—"} · thuộc tính ${pair.attributes}`;
+        chip.addEventListener("click", (event) => { event.stopPropagation(); highlight([item.label, other]); });
+        tile.appendChild(chip);
+      }
+      tiles.set(item.label, tile);
       grid.appendChild(tile);
     }
     panel.appendChild(grid);
-    const pairs = resp.people_duplicates || [];
-    if (pairs.length) {
-      const head = document.createElement("p");
-      head.className = "qa-dup-title";
-      head.textContent = `Cặp nghi trùng · ${pairs.length} (re-ID + thuộc tính, chỉ người ở khác khung)`;
-      panel.appendChild(head);
-      for (const pair of pairs) {
-        const row = document.createElement("div");
-        row.className = "qa-dup-row" + (pair.merged ? " is-merged" : "");
-        for (const [label, image, box] of [[pair.a, pair.a_image, pair.a_box], [pair.b, pair.b_image, pair.b_box]]) {
-          const cell = document.createElement("button");
-          cell.type = "button";
-          cell.className = "qa-object-tile qa-dup-cell";
-          if (box) cell.appendChild(regionSvg(image, box, { pad: 0, label: `${label} trong ${image}` }));
-          const name = document.createElement("span");
-          name.textContent = `${label} · ${String(image).replace(/\.jpg$/i, "")}`;
-          cell.appendChild(name);
-          cell.addEventListener("click", (event) => {
-            event.stopPropagation();
-            openLightbox(image, null, { image_id: image, regions: box ? [{ label, box }] : [] });
-          });
-          row.appendChild(cell);
-        }
-        const verdict = document.createElement("span");
-        verdict.className = "qa-dup-verdict";
-        verdict.textContent = `${pair.merged ? "Đã gộp" : "Cần xem"} · re-ID ${pair.reid ?? "—"} · thuộc tính ${pair.attributes}`;
-        row.appendChild(verdict);
-        panel.appendChild(row);
-      }
-    }
-    if (unboxed) {
-      const note = document.createElement("p");
-      note.className = "qa-objects-note";
-      note.textContent = `${unboxed} ${people ? "người" : "đối tượng"} chưa có khung nên không hiện ảnh cắt; xem trong ảnh bằng chứng phía trên.`;
-      panel.appendChild(note);
-    }
     return panel;
   }
-
   function renderRetrievalPanel(turn, data = {}) {
     if (turn !== activeRetrievalTurn) return;
     const scope = data.examined_scope || {};
