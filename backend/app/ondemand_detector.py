@@ -38,6 +38,8 @@ class OnDemandDetector:
         self.threads = detection_thread_count(threads)
         self.cache_size = cache_size
         self.cache = OrderedDict()
+        # label -> {image_id: rows} from tools/build_person_crops.py; these images never run the model.
+        self.precomputed = {}
         self.lock = threading.Lock()
         self.processor = self.model = self.device = None
 
@@ -96,10 +98,19 @@ class OnDemandDetector:
         if not labels:
             return {}
         results = {}
+        remaining = []
+        for image_id in image_ids:
+            stored = [self.precomputed.get(label, {}).get(image_id) for label in labels]
+            if all(rows is not None for rows in stored):
+                results[image_id] = [row for rows in stored for row in rows]
+            else:
+                remaining.append(image_id)
+        if not remaining:
+            return results
         if not self.lock.acquire(timeout=max(0., deadline - time.monotonic())):
             return results
         try:
-            for image_id in image_ids:
+            for image_id in remaining:
                 if time.monotonic() >= deadline:
                     break
                 path = (self.images_dir / image_id).resolve()

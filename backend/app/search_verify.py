@@ -15,6 +15,7 @@ import re
 import time
 from collections import OrderedDict
 
+from .metadata_rerank import rerank
 from .qa_client import QAClientError, QAInvalidOutputError
 from .qa_evidence import is_valid_normalized_box
 from .regions import iou
@@ -244,8 +245,24 @@ class SearchVerifier:
         client = getattr(self.qa_service, "client", None)
         return bool(client is not None and client.is_ready() and hasattr(client, "structured"))
 
+    async def metadata_order(self, query, details, image_ids, keep):
+        """Candidates with the frames whose metadata best fits the description first (one text call,
+        cached); the original order when there is no metadata, the setting is off or the call fails."""
+        store = getattr(self.engine, "image_metadata", None)
+        if store is None or not getattr(self.settings, "search_metadata_rerank", False):
+            return image_ids, []
+        key = ("rerank", query, tuple(details), tuple(image_ids))
+        if key in self.cache:
+            return self.cache[key]
+        description = query + ("" if not details else " | " + " | ".join(details))
+        result = await rerank(getattr(self.qa_service, "client", None), store, description, image_ids, keep)
+        if result[1]:
+            self.cache[key] = result
+        return result
+
     async def verify(self, query, details, conditions, image_ids, language="vi", limit=8):
         requirements = requirements_for(details, conditions, query)
+        image_ids, reranked = await self.metadata_order(query, details, image_ids, max(limit * 2, 8))
         chosen, skipped = pick_diverse(image_ids, self.engine, limit)
         key = (query, tuple(details), tuple(conditions), tuple(chosen), language)
         if key in self.cache:
@@ -264,6 +281,7 @@ class SearchVerifier:
             verdicts.update(result)
         verdicts = await self._zoom_confirm(query, requirements, verdicts, language, deadline)
         response = {"requirements": requirements, "checked_ids": [i for i in chosen if i in verdicts],
+                    "metadata_ranked": reranked,
                     "skipped_near_duplicates": skipped,
                     "verdicts": verdicts, "errors": errors,
                     "took_ms": int((time.perf_counter() - started) * 1000), "cache_hit": False}

@@ -328,6 +328,8 @@ class QAResponse(BaseModel):
     api_calls: int = 0
     status: QAStatus
     answer: str | None = None
+    # Bare answer to submit to DRES ('4 người', 'màu nâu'); None when the answer has no short form.
+    short_answer: str | None = None
     reason_code: str | None = None
     message: str | None = None
     evidence: list[QAEvidenceItem] = Field(default_factory=list)

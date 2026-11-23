@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from typing import Iterator
 
 from .config import Settings
-from .dres_client import DresAuthError, DresClient, DresError, DresTask, Verdict
+from .dres_client import DresAuthError, DresClient, DresError, DresTask, Verdict, is_qa_task
 from .sessions import LocalSession, SessionStore
 
 
@@ -95,8 +95,7 @@ class DresGateway:
             task = await self._client_for(session).current_task(evaluation_id, session.dres_session_id)
             if task is None:
                 raise GatewayError(409, "no_active_task", "Chưa có task đang chạy trong buổi thi.")
-            task_type = task.task_type.casefold()
-            if "question" not in task_type or "answer" not in task_type:
+            if not is_qa_task(task.task_type):
                 raise GatewayError(409, "wrong_task_type", "Task hiện tại không phải QA hoặc chưa xác định được loại task.")
             return await self._client_for(session).submit_text(evaluation_id, session.dres_session_id, text)
 

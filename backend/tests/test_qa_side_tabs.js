@@ -10,7 +10,7 @@ function element() {
 }
 const nodes = Object.fromEntries(['qa-images-panel', 'qa-comparison-panel', 'qa-images-tab', 'qa-comparison-tab'].map(id => [id, element()]));
 const context = {$: id => nodes[id], document: {createElement: () => element()},
-  createEvidenceActionBtn: () => element(), Array, String, Number};
+  createEvidenceActionBtn: () => element(), regionButton: () => element(), Array, String, Number};
 vm.createContext(context);
 const start = source.indexOf('  function createCosineHistory(');
 const end = source.indexOf('  function renderRetrievalPanel(', start);

@@ -102,9 +102,9 @@ def test_scan_more_than_24_and_cache_verified_answer(tmp_path, monkeypatch):
     reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 26, 30)
     req = QARequest(question='Which image has the most people?', answer_language='en')
     versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
-    # A detector proposal count alone cannot establish an exact maximum.
+    # Gemini checked the detector proposals and reports complete counts: all 26 images tie at one.
     response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
-    assert response.reason_code == 'incomplete_corpus_counts'
+    assert response.reason_code == 'too_many_maximum_images'
     assert response.examined_count == len(ids) and response.status == 'insufficient_evidence'
 
 
@@ -521,3 +521,51 @@ def test_distinct_verification_timeout_keeps_experimental_groups(tmp_path, monke
     assert result.status == 'insufficient_evidence' and result.reason_code == 'budget_exceeded'
     assert result.distinct_estimate['estimated_count'] == 1
     assert result.distinct_estimate['status'] == 'experimental' and 'unverified' in result.message
+
+
+def test_distinct_keeps_completed_crop_batches_on_timeout(tmp_path, monkeypatch):
+    import io
+    import numpy as np
+    from PIL import Image
+    reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 6, 16)
+    service.client.distinct_people = True
+    service.settings.qa_early_stop = False
+    async def search(query, k, detail=None):
+        return ([{'id': image_id, 'matches': []} for image_id in ids], 0)
+    batches = []
+    async def encode(crops):
+        batches.append(len(crops))
+        if len(batches) > 1:
+            raise TimeoutError('budget')
+        return np.tile(np.array([[1., 0.]], dtype=np.float32), (len(crops), 1))
+    async def wait_inline(awaitable, timeout):
+        return await awaitable
+    monkeypatch.setattr('app.qa_reasoning.asyncio.wait_for', wait_inline)
+    service.search_engine.search = search
+    service.search_engine.encode_image_crops = encode
+    image = io.BytesIO()
+    Image.new('RGB', (20, 20)).save(image, format='JPEG')
+    service.evidence_loader.load_for_image = lambda image_id, *a, **kw: SimpleNamespace(items=[
+        SimpleNamespace(image_id=image_id, evidence_id=image_id, kind='full_image', box=None,
+                        image_bytes=image.getvalue())])
+    req = QARequest(question='How many distinct people?', answer_language='en')
+    versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
+    result = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
+    assert batches == [4, 2]
+    assert result.distinct_estimate['assigned_regions'] == 4
+    assert result.distinct_estimate['unassigned_regions'] == 2
+    assert result.distinct_estimate['status'] == 'experimental'
+
+
+def test_repair_box_fixes_only_lossless_format_slips():
+    from app.qa_reasoning import repair_box, repair_observation_regions
+    assert repair_box([[.1, .2], [.4, .9]]) == [.1, .2, .4, .9]
+    assert repair_box(['0.4', '0.9', '0.1', '0.2']) == [.1, .2, .4, .9]
+    assert repair_box({'xmin': .1, 'ymin': .2, 'xmax': .4, 'ymax': 1.01}) == [.1, .2, .4, 1.0]
+    assert repair_box([100, 200, 300, 400]) is None and repair_box([.1, .2, .3]) is None
+    assert repair_box([.1, .2, .1, .5]) is None
+    raw = {'observations': [{'image_id': 'a', 'count_visibility': 'complete',
+                             'regions': [{'box': [[.1, .1], [.3, .9]]}, {'label': 'P2', 'box': [5, 5, 50, 50]}]}]}
+    row = repair_observation_regions(raw)['observations'][0]
+    assert row['regions'] == [{'label': 'R1', 'box': [.1, .1, .3, .9]}]
+    assert row['count_visibility'] == 'partial'

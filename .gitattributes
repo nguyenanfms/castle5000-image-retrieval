@@ -2,3 +2,4 @@
 /runtime/castle5000-media.zip filter=lfs diff=lfs merge=lfs -text
 /runtime/castle5000-indexes.zip filter=lfs diff=lfs merge=lfs -text
 /runtime/open_clip_model.safetensors filter=lfs diff=lfs merge=lfs -text
+/runtime/castle5000-siglip2.zip filter=lfs diff=lfs merge=lfs -text

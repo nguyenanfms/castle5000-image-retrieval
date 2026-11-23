@@ -83,3 +83,39 @@ def test_search_conditions_skip_detector_unless_enabled():
     results, _, mode, _, checked = asyncio.run(engine.search_demo('kitchen', 3, [], 'clip_region', [condition]))
     assert mode == 'clip_region' and [r['id'] for r in results] == ['a.jpg', 'b.jpg', 'c.jpg']
     assert {r['conditions'][0]['reason'] for r in results} == {'detector_unavailable'}
+
+
+def test_precomputed_person_boxes_skip_the_model(tmp_path, monkeypatch):
+    for name in ('a.jpg', 'b.jpg'):
+        (tmp_path / name).write_bytes(b'image')
+    detector = OnDemandDetector(tmp_path, tmp_path)
+    stored = [{'label': 'person', 'score': .8, 'box': [.1, .1, .4, .9]}]
+    detector.precomputed['person'] = {'a.jpg': stored, 'b.jpg': []}
+    monkeypatch.setattr(detector, '_detect', lambda *args: (_ for _ in ()).throw(AssertionError('model ran')))
+    # Even with the lock held elsewhere (deadline already past), stored images answer at once.
+    assert detector.detect_many(['a.jpg', 'b.jpg'], ['person'], time.monotonic() - 1) == {'a.jpg': stored, 'b.jpg': []}
+
+
+def test_person_crop_store_round_trip(tmp_path):
+    import hashlib, json
+    import numpy as np
+    from app.person_crops import SCHEMA, PersonCrops, qa_label_boxes as qa_person_boxes
+    ids = ['a.jpg', 'b.jpg']
+    rows = [{'label': 'person', 'score': .9, 'box': [.1, .1, .4, .9]},
+            {'label': 'person', 'score': .85, 'box': [.11, .1, .41, .9]},   # same person: merged
+            {'label': 'person', 'score': .4, 'box': [.6, .1, .9, .9]}]      # below DETECTION_SCORE
+    boxes = qa_person_boxes(rows)
+    assert boxes == [[.1, .1, .4, .9]]
+    (tmp_path / 'detections.json').write_text(json.dumps({'person': {'a.jpg': rows}, 'cup': {'a.jpg': []}}))
+    (tmp_path / 'crops.json').write_text(json.dumps([{'id': 'a.jpg', 'label': 'person', 'box': boxes[0]}]))
+    np.save(tmp_path / 'vectors.npy', np.asarray([[0.6, 0.8]], dtype=np.float16))
+    manifest = dict(schema=SCHEMA, labels=['person', 'cup'], embed_model='m', embed_pretrained='p', num_images=1, num_crops=1,
+                    ids_sha256=hashlib.sha256(json.dumps(ids).encode()).hexdigest(), complete=False)
+    (tmp_path / 'manifest.json').write_text(json.dumps(manifest))
+    store = PersonCrops.load(tmp_path, ids, 'm', 'p')
+    assert store.vector_for('a.jpg', [.1, .1, .4, .9]) is not None
+    assert store.vector_for('a.jpg', [.5, .1, .9, .9]) is None
+    assert store.detections['cup'] == {'a.jpg': []}
+    import pytest
+    with pytest.raises(ValueError):
+        PersonCrops.load(tmp_path, ids, 'other-model', 'p')

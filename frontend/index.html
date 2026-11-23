@@ -6,7 +6,7 @@
   <title>Castle Search</title>
   <meta name="page-type" content="software" />
   <meta name="site-kind" content="software" />
-  <link rel="stylesheet" href="/style.css?v=castle-search-unified-29" />
+  <link rel="stylesheet" href="/style.css?v=castle-search-unified-36" />
 </head>
 <body>
   <main>
@@ -226,6 +226,8 @@
             <textarea id="qa-submit-text" rows="2" maxlength="2000" placeholder="Nhập đáp án ngắn gọn"></textarea>
             <button id="qa-submit-answer" type="button" disabled>Nộp đáp án</button>
             <p id="qa-submit-status" role="status"></p>
+            <p class="qa-submit-note">Đáp án QA do giáo viên chấm tay: nộp xong sẽ không có kết quả đúng/sai trả về.</p>
+            <ol id="qa-submit-history" class="qa-submit-history" aria-label="Đáp án đã nộp cho task này"></ol>
           </div>
         </details>
       </div>
@@ -329,6 +331,6 @@
     </div>
   </div>
 
-  <script src="/app.js?v=castle-search-unified-29"></script>
+  <script src="/app.js?v=castle-search-unified-36"></script>
 </body>
 </html>

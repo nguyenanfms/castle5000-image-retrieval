@@ -58,6 +58,7 @@ output/
 !/tools/build_index.py
 !/tools/mock_dres.py
 !/tools/start_local.py
+!/tools/package_release.py
 /runtime-data/
 
 # Retired local models, labels and indexes; never loaded by the application.
@@ -136,4 +137,8 @@ Desktop.ini
 # The runtime bundle is distributed through Git LFS.
 !/runtime/castle5000-media.zip
 !/runtime/castle5000-indexes.zip
+!/runtime/castle5000-siglip2.zip
 !/runtime/open_clip_model.safetensors
+
+# Retired files moved out of the way (local only, never pushed).
+backup/

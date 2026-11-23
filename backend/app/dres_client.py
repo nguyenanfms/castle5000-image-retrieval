@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -7,7 +8,8 @@ import httpx
 
 from .config import Settings
 
-Verdict = Literal["correct", "wrong", "pending", "rejected", "error"]
+# "submitted": accepted by DRES for manual grading (QA text answers); no verdict ever comes back.
+Verdict = Literal["correct", "wrong", "pending", "submitted", "rejected", "error"]
 
 # ApiVerdictStatus enum values, from DRES's own OpenAPI spec (dres-dev/DRES,
 # doc/oas.json) -> normalized verdicts used by this app's /api/submit.
@@ -131,7 +133,12 @@ class DresClient:
         return await self._submit_answer(evaluation_id, session_id, answer)
 
     async def submit_text(self, evaluation_id: str, session_id: str, text: str) -> tuple[Verdict, str]:
-        return await self._submit_answer(evaluation_id, session_id, {"text": text})
+        """QA answers are graded by hand, so DRES never reports correct/wrong for them: any accepted
+        submission is just "submitted", whatever placeholder verdict DRES returns."""
+        verdict, message = await self._submit_answer(evaluation_id, session_id, {"text": text})
+        if verdict in ("correct", "wrong", "pending"):
+            return "submitted", "Đã nộp. Giáo viên chấm tay nên không có kết quả trả về."
+        return verdict, message
 
     async def _submit_answer(self, evaluation_id: str, session_id: str, answer: dict[str, str]) -> tuple[Verdict, str]:
         body = {"answerSets": [{"answers": [answer]}]}
@@ -150,13 +157,7 @@ class DresClient:
             return verdict, data.get("description", "")
         if resp.status_code == 401:
             raise DresAuthError()
-        if resp.status_code == 404:
-            return "error", _error_message(resp, "Không tìm thấy evaluation hoặc ảnh trên DRES")
-        if resp.status_code == 412:
-            return "rejected", _error_message(
-                resp, "DRES từ chối submit (hết giờ hoặc không hợp lệ)"
-            )
-        return "error", _error_message(resp, f"DRES trả lỗi không rõ: HTTP {resp.status_code}")
+        return _explain_failure(resp)
 
     async def evaluations(self, session_id: str) -> list[dict]:
         resp = await self._client.get('/api/v2/client/evaluation/list', params={'session': session_id})
@@ -170,6 +171,30 @@ class DresClient:
         resp = await self._client.get("/api/v2/status/time")
         resp.raise_for_status()
         return resp.json()["timeStamp"]
+
+
+def is_qa_task(task_type: str | None) -> bool:
+    """Task types are named by the organisers ("LSC Question & Answer Text", "QA", "Q&A", ...)."""
+    t = (task_type or "").casefold()
+    return "question" in t or "answer" in t or bool(re.search(r"(^|[^a-z])q\s*&?\s*a([^a-z]|$)", t))
+
+
+def _explain_failure(resp: httpx.Response) -> tuple[Verdict, str]:
+    """Turn a refused submission into what the team should do (DRES guide, sections 7.3 and 9.2)."""
+    raw = _error_message(resp, "")
+    low = raw.casefold()
+    code = resp.status_code
+    if "media item" in low:
+        verdict, text = "error", "Sai tên ảnh hoặc collection (phải là day1_Kitchen_HH_frame trong castle5000)"
+    elif code == 400 and "state" in low:
+        verdict, text = "rejected", "Không có task đang chạy (chưa bắt đầu hoặc đã hết giờ)"
+    elif code == 404:
+        verdict, text = "error", "Sai Evaluation ID, hoặc tài khoản không thuộc buổi thi này"
+    elif code == 412:
+        verdict, text = "rejected", "Bị từ chối: đã nộp đáp án này rồi, hoặc team đã có bài đúng cho task này"
+    else:
+        verdict, text = "error", f"DRES trả lỗi HTTP {code}"
+    return verdict, f"{text} (DRES: {raw})" if raw else text
 
 
 def _error_message(resp: httpx.Response, fallback: str) -> str:

@@ -317,12 +317,13 @@ class GeminiQAClient(BaseQAClient):
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
         max_output_tokens: int = 256,
         transport: httpx.AsyncBaseTransport | None = None,
-        backup_api_key: str = "",
+        backup_api_key: str | list[str] = "",
     ):
         self._base_url = (base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
         self._api_key = api_key.strip()
-        # Same model, second key: used when the active key is rate limited or overloaded.
-        self._api_keys = [k for k in dict.fromkeys([self._api_key, (backup_api_key or "").strip()]) if k]
+        # Same model, further keys: tried in order when the active key is rate limited or overloaded.
+        backups = [backup_api_key] if isinstance(backup_api_key, str) else list(backup_api_key or [])
+        self._api_keys = [k for k in dict.fromkeys([self._api_key, *(b.strip() for b in backups)]) if k]
         self._key_cooldown_until = [0.0] * len(self._api_keys)
         self._model = model.strip()
         self.model_version = self._model or "unconfigured"
@@ -581,7 +582,7 @@ def create_qa_client(settings: Settings) -> BaseQAClient:
             model=settings.qa_model,
             base_url=settings.qa_base_url or "https://generativelanguage.googleapis.com/v1beta",
             max_output_tokens=settings.qa_max_output_tokens,
-            backup_api_key=settings.qa_api_key_backup,
+            backup_api_key=settings.qa_backup_keys,
         )
     if provider == "ollama":
         return OpenAICompatibleQAClient(

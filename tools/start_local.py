@@ -18,7 +18,18 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 DATA = ROOT / "runtime-data"
-ARCHIVES = ("castle5000-media.zip", "castle5000-indexes.zip")
+MEDIA = "castle5000-media.zip"
+# Current release: SigLIP 2 whole-image and region indexes plus the Gemini image metadata. The SigLIP 2
+# weights (about 4.3 GB) come from Hugging Face on the first start and are cached in .cache/huggingface.
+SIGLIP = "castle5000-siglip2.zip"
+SIGLIP_FILES = {
+    "ids.json", "index.faiss",
+    "regions-siglip2/manifest.json", "regions-siglip2/regions.json", "regions-siglip2/regions.npy",
+    "regions-siglip2/context.npy", "regions-siglip2/text_parity.json",
+    "image-metadata/metadata.jsonl", "image-metadata/manifest.json", "image-metadata/missing.json",
+}
+# Previous release (ViT-B/32 + RegionCLIP), used only when the SigLIP 2 bundle is absent.
+LEGACY = "castle5000-indexes.zip"
 WEIGHTS = RUNTIME / "open_clip_model.safetensors"
 INDEX_FILES = {
     "ids.json", "index.faiss", "regions/index.faiss",
@@ -28,11 +39,27 @@ INDEX_FILES = {
 MEDIA_PATH = re.compile(r"(?:images|thumbs)/[0-9]+_[0-9]+\.jpg")
 
 
+def lfs_ready(path):
+    return path.is_file() and path.stat().st_size >= 1024
+
+
+def release():
+    """'siglip2' when its bundle is in runtime/, else 'legacy'."""
+    return "siglip2" if lfs_ready(RUNTIME / SIGLIP) else "legacy"
+
+
 def prepare_data():
-    archives = [RUNTIME / name for name in ARCHIVES]
-    for artifact in (*archives, WEIGHTS):
-        if not artifact.is_file() or artifact.stat().st_size < 1024:
+    profile = release()
+    if profile == "siglip2":
+        archives = [RUNTIME / MEDIA, RUNTIME / SIGLIP]
+        required = archives
+    else:
+        archives = [RUNTIME / MEDIA, RUNTIME / LEGACY]
+        required = (*archives, WEIGHTS)
+    for artifact in required:
+        if not lfs_ready(artifact):
             raise ValueError(f"Missing Git LFS data for {artifact.name}. Run: git lfs pull")
+    print(f"Release: {profile}", flush=True)
 
     DATA.mkdir(exist_ok=True)
     for archive_path in archives:
@@ -42,9 +69,12 @@ def prepare_data():
             names = {member.filename for member in members}
             if len(names) != len(members):
                 raise ValueError(f"Duplicate filenames in {archive_path.name}")
-            if archive_path.name == ARCHIVES[0]:
+            if archive_path.name == MEDIA:
                 if len(names) != 10000 or not all(MEDIA_PATH.fullmatch(name) for name in names):
                     raise ValueError("The media bundle must contain 5,000 photos and 5,000 thumbnails")
+            elif archive_path.name == SIGLIP:
+                if names != SIGLIP_FILES:
+                    raise ValueError("SigLIP 2 bundle contents do not match the release")
             elif names not in (INDEX_FILES, INDEX_FILES | {"search-detections.json"}):
                 raise ValueError("Index bundle contents do not match the release")
             digest = json.dumps({member.filename: member.CRC for member in members}, sort_keys=True)
@@ -67,9 +97,16 @@ def prepare_data():
             marker.write_text(digest, encoding="utf-8")
 
     ids = json.loads((DATA / "ids.json").read_text(encoding="utf-8"))
-    manifest = json.loads((DATA / "regions/manifest.json").read_text(encoding="utf-8"))
-    if len(ids) != 5000 or len(set(ids)) != len(ids) or ids != manifest["ids"]:
-        raise ValueError("The CLIP and RegionCLIP indexes must cover the same 5,000 image IDs")
+    if len(ids) != 5000 or len(set(ids)) != len(ids):
+        raise ValueError("The index must cover 5,000 distinct image IDs")
+    if profile == "legacy":
+        manifest = json.loads((DATA / "regions/manifest.json").read_text(encoding="utf-8"))
+        if ids != manifest["ids"]:
+            raise ValueError("The CLIP and RegionCLIP indexes must cover the same 5,000 image IDs")
+    else:
+        manifest = json.loads((DATA / "regions-siglip2/manifest.json").read_text(encoding="utf-8"))
+        if manifest.get("num_images") != len(ids) or not manifest.get("complete"):
+            raise ValueError("The SigLIP 2 region index is incomplete")
     for image in ids:
         if not MEDIA_PATH.fullmatch(f"images/{image}") or not all(
             (DATA / directory / image).is_file() for directory in ("images", "thumbs")
@@ -93,7 +130,8 @@ def start_service(module, port, env):
 
 
 def wait_for_web(web, mock, port):
-    for _ in range(180):
+    # The first SigLIP 2 start also downloads its weights, so allow up to an hour.
+    for _ in range(3600 if release() == "siglip2" else 180):
         if web.poll() is not None or (mock is not None and mock.poll() is not None):
             raise ValueError("The search app or the DRES demo stopped during startup")
         try:
@@ -106,7 +144,7 @@ def wait_for_web(web, mock, port):
                 pass
             continue
         if health.get("images") != 5000 or not health.get("region_ready"):
-            raise ValueError("Expected 5,000 images and a ready RegionCLIP index. See the startup log.")
+            raise ValueError("Expected 5,000 images and a ready region index. See the startup log.")
         return
     raise ValueError("The search app did not finish loading its indexes in time")
 
@@ -127,11 +165,24 @@ def run(args):
     env.update(
         IMAGES_DIR=str(DATA / "images"), THUMBS_DIR=str(DATA / "thumbs"),
         INDEX_PATH=str(DATA / "index.faiss"), IDS_PATH=str(DATA / "ids.json"),
-        REGION_INDEX_DIR=str(DATA / "regions"), SEARCH_REGION_THRESHOLD="0.21761782467365265",
-        EMBED_MODEL_NAME="ViT-B-32", EMBED_PRETRAINED=str(WEIGHTS),
         OMP_NUM_THREADS="1", SESSION_COOKIE_SECURE="false",
         SESSION_COOKIE_NAME=f"castle5000_{args.port}",
+        HF_HOME=env.get("HF_HOME", str(ROOT / ".cache" / "huggingface")),
     )
+    if release() == "siglip2":
+        # Thresholds belong to the model: 0.1088 for SigLIP 2 regions, 0.86 for merging people across frames.
+        env.update(
+            EMBED_MODEL_NAME="ViT-SO400M-16-SigLIP2-384", EMBED_PRETRAINED="webli",
+            REGION_INDEX_DIR=str(DATA / "regions-siglip2"), SEARCH_REGION_THRESHOLD="0.1088",
+            QA_DISTINCT_SIMILARITY_THRESHOLD="0.86", IMAGE_METADATA_DIR=str(DATA / "image-metadata"),
+        )
+        print("First start downloads the SigLIP 2 weights (about 4.3 GB) from Hugging Face.", flush=True)
+    else:
+        env.update(
+            EMBED_MODEL_NAME="ViT-B-32", EMBED_PRETRAINED=str(WEIGHTS),
+            REGION_INDEX_DIR=str(DATA / "regions"), SEARCH_REGION_THRESHOLD="0.21761782467365265",
+            QA_DISTINCT_SIMILARITY_THRESHOLD="0.76", IMAGE_METADATA_DIR=str(DATA / "image-metadata-none"),
+        )
     port_available(args.port)
     mock = None
     web = None

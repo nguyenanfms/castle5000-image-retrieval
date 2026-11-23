@@ -10,10 +10,10 @@ from .schemas import COUNT_CONDITIONS, SPATIAL_CONDITIONS
 
 
 DETECTION_SCORE = 0.60
-# Highest RegionCLIP similarity to "person" over an image's regions. Measured on the corpus:
-# empty kitchen frames score about 0.15, frames with people 0.22-0.25 (median 0.224).
-PERSON_ABSENT_BELOW = 0.165
-PERSON_PRESENT_FROM = 0.20
+# Region-index evidence for "no person": an indexed region of kind "person" rules the image out
+# (77 of 78 agreed with Grounding DINO on 199 labelled frames). Similarity thresholds were dropped:
+# absent and present frames overlap in score and the ranges move with every index rebuild, so a
+# missing person region never confirms absence on its own.
 DETECTOR = "IDEA-Research/grounding-dino-tiny"
 DETECTOR_LABELS = frozenset({
     "person", "refrigerator", "sink", "faucet", "table", "stove", "cup", "bowl", "plate", "bottle", "pot", "pan",
@@ -82,7 +82,7 @@ def supports_position(kind, a, b):
             "near": math.hypot(gap_x, gap_y) <= .10}[kind]
 
 
-def check_constraint(condition, regions, detections, person_score=None):
+def check_constraint(condition, regions, detections, person_regions=None):
     def detected(phrase):
         label = canonical_label(phrase)
         return [{"query": phrase, "score": row["score"], "box": row["box"], "source": "detection",
@@ -96,14 +96,13 @@ def check_constraint(condition, regions, detections, person_score=None):
         return max(detected(phrase), key=lambda item: item["score"], default=None)
 
     result = {**condition.model_dump(), "status": "unknown", "reason": "undetermined", "evidence": []}
-    if (condition.kind == "absent" and detections is None and person_score is not None
+    if (condition.kind == "absent" and detections is None and person_regions is not None
             and canonical_label(condition.subject) == "person"):
-        # Without a detector, the region index still says whether any region looks like a person.
-        result["observed_score"] = round(float(person_score), 4)
-        if person_score < PERSON_ABSENT_BELOW:
-            result.update(status="met", reason="no_person_region")
-        elif person_score >= PERSON_PRESENT_FROM:
-            result.update(status="violated", reason="person_region_detected")
+        # Without a detector, person regions in the index can rule an image out, never confirm absence.
+        if person_regions:
+            result.update(status="violated", reason="person_region_detected", observed_count=len(person_regions),
+                          evidence=[{"query": condition.subject, "box": box, "score": None, "source": "region",
+                                     "supported": True, "model": "region-index"} for box in person_regions[:5]])
         else:
             result["reason"] = "absence_unconfirmed"
         return result
@@ -138,7 +137,7 @@ def check_constraint(condition, regions, detections, person_score=None):
 
 
 def rank_checked_shortlist(index, baseline, details, conditions, candidate_k, threshold, weight, detections, *,
-                           target_k=None, person_scores=None):
+                           target_k=None, person_regions=None):
     """Expand the checked prefix as needed. Return the ranking and the number of checked images."""
     terms = list(dict.fromkeys([*details, *(term for c in conditions if c.kind in SPATIAL_CONDITIONS
                                            for term in (c.subject, c.target))]))
@@ -152,14 +151,15 @@ def rank_checked_shortlist(index, baseline, details, conditions, candidate_k, th
         matched = index.shortlist_matches(batch, terms) if index and terms else {}
         for rank, row in enumerate(batch, examined + 1):
             owner = row["id"]
-            regions = {match["query"]: {**match, "source": "region", "model": "RegionCLIP-RN50",
+            regions = {match["query"]: {**match, "source": "region",
+                                        "model": match.get("model") or getattr(index, "model_label", "RegionCLIP-RN50"),
                                         "supported": match["score"] is not None and match["score"] >= threshold}
                        for match in matched.get(owner, [])}
             matches = [regions.get(term, {"query": term, "score": None, "source": "region", "supported": False})
                        for term in details]
             evidence = [*positive_checks(matches), *(check_constraint(
                 c, regions, detections.get(owner),
-                person_scores.get(owner) if person_scores else None) for c in conditions)]
+                person_regions.get(owner, []) if person_regions is not None else None) for c in conditions)]
             if any(check["status"] == "violated" for check in evidence):
                 continue
             passed = sum(check["status"] == "met" for check in evidence)

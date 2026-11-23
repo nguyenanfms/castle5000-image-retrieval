@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .qa_client import QAClientError, QAInvalidOutputError, QATimeoutError, QATruncatedOutputError, QAUnavailableError
 
@@ -35,8 +36,11 @@ from .qa_aggregation import AggregationStep, aggregate_observations
 from .qa_people import ReviewedPeople, estimate_distinct_people, prepare_object_crops
 from .qa_store import EvidenceStore
 from .regions import iou
-from .schemas import QAClaim, QAEvidenceItem, QARegion, QAResponse
+from .schemas import QAClaim, QAEvidenceItem, QARegion, QAResponse, SearchCondition
 from .search_conditions import DETECTION_SCORE, canonical_label, distinct_detections, same_detection
+from .metadata_people import brief_metadata, coverage_frames
+from .metadata_rerank import rerank
+from .understanding import QA_RULES, retrieval_conditions, valid_conditions
 
 log = logging.getLogger('retrieval.qa.reasoning')
 
@@ -57,8 +61,23 @@ class Plan(StrictModel):
     information_needed: str = Field(max_length=1000)
     queries: list[str] = Field(max_length=3)
     detail_queries: list[str] = Field(default_factory=list, max_length=3)
+    # known_conditions in the structured form image search checks (absent, counts, spatial, action).
+    conditions: list[SearchCondition] = Field(default_factory=list, max_length=5)
     processing_steps: list[AggregationStep] = Field(default_factory=list, max_length=6)
     clarification: str | None = None
+
+    @field_validator('queries', 'detail_queries', 'known_conditions', mode='before')
+    @classmethod
+    def keep_first_items(cls, value, info):
+        # A model that lists one query too many should not fail the whole plan: keep the first ones.
+        limit = {'queries': 3, 'detail_queries': 3, 'known_conditions': 10}[info.field_name]
+        return value[:limit] if isinstance(value, list) else value
+
+    @field_validator('conditions', mode='before')
+    @classmethod
+    def keep_valid_conditions(cls, value):
+        # A malformed condition is dropped rather than failing the plan: it only narrows retrieval.
+        return valid_conditions(value if isinstance(value, list) else [])
 
 
 def solid_evidence(observation, plan):
@@ -88,18 +107,50 @@ def scene_evidence_settled(observations, plan):
     return bool(solid) or len(matching) >= 2
 
 
+def same_event(a, b, seconds=14):
+    """Two frames of the same hour at most `seconds` apart (frames are ~7 s apart): one event."""
+    try:
+        ha, sa = a.rsplit('.', 1)[0].split('_')
+        hb, sb = b.rsplit('.', 1)[0].split('_')
+        return ha == hb and abs(int(sa) - int(sb)) <= seconds
+    except ValueError:
+        return False
+
+
+def rank_scene_matches(observations, order, metadata_scores=None):
+    """Best match to a described scene first: fewest violated conditions, most met conditions, highest
+    metadata match, then search rank. Used when matching frames disagree on a count, so a question about
+    one described moment gets the count of the frame that fits the description best."""
+    position = {image_id: i for i, image_id in enumerate(order)}
+    scores = metadata_scores or {}
+
+    def key(o):
+        violated = sum(c.status == 'violated' for c in o.checks)
+        met = sum(c.status == 'met' for c in o.checks)
+        return (violated, -met, -scores.get(o.image_id, 0.0), position.get(o.image_id, len(position)))
+    return sorted(observations, key=key)
+
+
 def uses_detector_regions(plan):
-    return bool(plan and (plan.operation in {'count_visible', 'count_max', 'count_distinct_people', 'count_distinct_objects'}
-                          or any(step.field == 'visible_count' for step in plan.processing_steps)))
+    """Distinct counts group detector crops by cosine similarity, so their regions must come from the detector.
+
+    Per-image counts (count_visible, count_max, visible_count steps) keep the boxes Gemini returns after
+    checking the detector proposals; replacing them would discard that check and, without detections,
+    leave every count unknown.
+    """
+    return bool(plan and plan.operation in {'count_distinct_people', 'count_distinct_objects'})
 
 
 def prefer_distinct_scope(plan: Plan, request) -> bool:
     """Honor total-object questions unless the user specifies an image or appearances."""
     question = request.question.casefold()
-    if request.image_id:
-        return False
+    if request.image_id or plan.clarification:
+        return False  # The planner's question to the user wins over a keyword heuristic.
     if plan.operation not in {'count_visible', 'describe', 'count_distinct_people', 'count_distinct_objects'}:
         return False
+    if plan.operation == 'describe' and not re.search(
+            r'\b(?:bao\s+nhiêu|mấy|đếm|how\s+many|number\s+of|count)\b', question):
+        return False  # "tổng" alone (e.g. a sum over images) is not a request for distinct instances.
     if not re.search(r'\b(?:tổng(?:\s+cộng|\s+số)?|tất\s+cả|khác\s+nhau|total|distinct|unique)\b', question):
         return False
     if re.search(r'\b(?:số\s+lần|bao\s+nhiêu\s+lần|lượt\s+xuất\s+hiện|occurrences|appearances|how\s+many\s+times)\b', question):
@@ -125,7 +176,6 @@ def apply_distinct_scope(plan: Plan, request) -> Plan:
         plan.answer_scope = 'corpus'
         plan.question_type = 'multi_image'
         plan.context_source = 'new_search'
-        plan.clarification = None
     return plan
 
 
@@ -149,6 +199,66 @@ class Observation(StrictModel):
 
 class Observations(StrictModel):
     observations: list[Observation] = Field(max_length=4)
+
+
+def repair_box(box):
+    """Coerce common model box formats to normalized [x1, y1, x2, y2]; None when unrecoverable.
+
+    Only lossless fixes: nested corner pairs, coordinate dicts, numeric strings, swapped corners and
+    rounding overflow. Values above 1 may be pixels or a 0-1000 scale; guessing would change counts,
+    so such boxes are dropped and the count becomes a lower bound.
+    """
+    if isinstance(box, dict):
+        keys = next((k for k in (('x1', 'y1', 'x2', 'y2'), ('xmin', 'ymin', 'xmax', 'ymax'),
+                                 ('left', 'top', 'right', 'bottom')) if all(x in box for x in k)), None)
+        if keys is None:
+            return None
+        box = [box[k] for k in keys]
+    if not isinstance(box, (list, tuple)):
+        return None
+    flat = []
+    for value in box:
+        if isinstance(value, (list, tuple)):
+            flat.extend(value)
+        else:
+            flat.append(value)
+    if len(flat) != 4:
+        return None
+    try:
+        values = [float(v) for v in flat]
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) and v >= -0.02 for v in values):
+        return None
+    if max(values) > 1.02:
+        return None
+    x1, x2 = sorted(min(1.0, max(0.0, v)) for v in (values[0], values[2]))
+    y1, y2 = sorted(min(1.0, max(0.0, v)) for v in (values[1], values[3]))
+    if x2 - x1 < 1e-3 or y2 - y1 < 1e-3:
+        return None
+    return [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+
+
+def repair_observation_regions(raw):
+    """Fix region boxes in place before validation so a formatting slip costs no extra model call."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('observations'), list):
+        return raw
+    rows = []
+    for row in raw['observations']:
+        if isinstance(row, dict) and isinstance(row.get('regions'), list):
+            regions, dropped = [], 0
+            for i, region in enumerate(row['regions']):
+                box = repair_box(region.get('box') if isinstance(region, dict) else region)
+                if box is None:
+                    dropped += 1
+                    continue
+                label = region.get('label') if isinstance(region, dict) else None
+                regions.append({'label': str(label or f'R{i+1}')[:120], 'box': box})
+            row = {**row, 'regions': regions}
+            if dropped and row.get('count_visibility') == 'complete':
+                row['count_visibility'] = 'partial' if regions else 'unknown'
+        rows.append(row)
+    return {**raw, 'observations': rows}
 
 
 def normalize_observations(raw):
@@ -210,6 +320,8 @@ class Draft(StrictModel):
     calculations: list[Calculation] = Field(default_factory=list, max_length=6)
     status: Literal['answered', 'insufficient_evidence', 'ambiguous']
     answer: str | None = Field(default=None, max_length=2000)
+    # The bare answer a team would submit ('4 người', 'màu nâu', 'có'), without image IDs or caveats.
+    short_answer: str | None = Field(default=None, max_length=120)
     claims: list[Claim] = Field(default_factory=list, max_length=12)
     message: str | None = None
     missing: list[str] = Field(default_factory=list, max_length=6)
@@ -418,11 +530,13 @@ class ReasoningQA:
         reviewed_max = None
         rejected_count_ids = set()
         invalid_observation_ids = set()
+        isolation_budget = [4]  # Single-image re-reads allowed after a whole batch returns invalid output.
         provider_failures = []
         stopped_early = False
         early_stop_disabled = False
         skipped_ids = []
         crop_cache = {}
+        background_embedding = {'task': None}
         distinct_history = []
         draft_keys = []
         observation_budget_exhausted = False
@@ -455,7 +569,7 @@ class ReasoningQA:
             task = {'stage': stage, 'schema': schema.model_json_schema(), **data}
             issues = []
             allowed_fields = set().union(*(set(model.model_fields) for model in
-                (Plan, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
+                (Plan, SearchCondition, AggregationStep, ConditionCheck, QARegion, Observation, Observations, Claim, Calculation, Draft, DraftKey, Verification,
                  SearchRefinement)))
             for attempt in range(2):
                 calls += 1
@@ -467,11 +581,8 @@ class ReasoningQA:
                     reserve = (distinct_reserve_s if stage == 'observing' and is_distinct else
                                embedding_reserve_s if stage == 'verifying' and is_distinct else 0.0)
                     raw = await self.service.client.structured(prompt, list(images), deadline - reserve)
-                    if (stage == 'observing' and uses_detector_regions(plan) and
-                            isinstance(raw, dict) and isinstance(raw.get('observations'), list)):
-                        raw = {**raw, 'observations': [
-                            {**row, 'regions': [], 'count_visibility': 'unknown'} if isinstance(row, dict) else row
-                            for row in raw['observations']]}
+                    if stage == 'observing':
+                        raw = repair_observation_regions(raw)
                     try:
                         result = schema.model_validate(raw)
                     except ValidationError as original_error:
@@ -517,6 +628,12 @@ class ReasoningQA:
                 row for row in rows if row['label'] == label and row['score'] >= DETECTION_SCORE
             ])[:40]]
 
+        def metadata_note(image_id):
+            """Short text from the image metadata for the reader (who is where, wearing and doing what)."""
+            store = getattr(self.service.search_engine, 'image_metadata', None)
+            meta = store.get(image_id) if store is not None else None
+            return brief_metadata(meta) if meta is not None else None
+
         async def observe(images, *, zoom=False):
             batch_ids = [item.image_id for item in images if item.kind == 'full_image']
             result = await invoke('observing', Observations, dict(
@@ -525,6 +642,7 @@ class ReasoningQA:
                 conditions=condition_data(), language=req.answer_language,
                 manifest=[dict(evidence_id=x.evidence_id, image_id=x.image_id, view=x.kind, box=x.box,
                     proposals=detection_hints(x.image_id) if x.kind == 'full_image' else [],
+                    notes=metadata_note(x.image_id) if x.kind == 'full_image' else None,
                     sequence=self.catalog.records[x.image_id].model_dump()
                     if plan.question_type == 'temporal' and x.image_id in self.catalog.records else None)
                     for x in images],
@@ -538,16 +656,29 @@ class ReasoningQA:
                     'label like P1 and box=[x1,y1,x2,y2] as exactly four numeric coordinates '
                     'from 0 to 1 rounded to at most three decimals; x1<x2 and y1<y2. '
                     'Do not return points, polygons, pixel coordinates or nested arrays. '
+                    'notes are automatic text descriptions of the frame written earlier; they can be wrong '
+                    'or incomplete. Use them only to find people and objects quickly, and decide every '
+                    'condition, attribute and count from the image itself. '
                     'Check proposals for false positives and missed instances. Use count_visibility=complete '
                     'for a supported visible count, partial for an incomplete count, and unknown when '
                     'no reliable count is possible. Only for temporal questions use state and subject_key. '
-                    + ('For this distinct-object task do not return regions or a count; '
-                       'the server supplies Grounding DINO proposals separately. '
+                    + ('For this distinct-object task the server counts Grounding DINO proposals when an image has them; '
+                       'still return one box per visible instance so images without proposals can be counted. '
                        if uses_detector_regions(plan) else '')
                     + ('Use the crops to recheck unclear details. All boxes are relative to the full image.' if zoom else '')
                 )), images)
-            if {o.image_id for o in result.observations} != set(batch_ids) or len(result.observations) != len(batch_ids):
+            # Keep one observation per requested image; drop invented or duplicated IDs instead of
+            # discarding the whole batch. Images left without an observation are reported as missing.
+            kept = {}
+            for item in result.observations:
+                if item.image_id in batch_ids and item.image_id not in kept:
+                    kept[item.image_id] = item
+            if not kept:
                 raise QAInvalidOutputError('Quan sát chứa ID ảnh sai hoặc thiếu ảnh')
+            if len(kept) != len(result.observations) or len(kept) != len(batch_ids):
+                log.warning('qa_observation_ids_mismatch request_id=%s kept=%d expected=%d returned=%d',
+                            rid, len(kept), len(batch_ids), len(result.observations))
+            result.observations = [kept[x] for x in batch_ids if x in kept]
             expected_ids = set(range(1, len(plan.known_conditions)+1))
             for item in result.observations:
                 ids = [check.condition_id for check in item.checks]
@@ -564,11 +695,14 @@ class ReasoningQA:
                         regions.append(region)
                 item.regions = regions
                 if uses_detector_regions(plan):
-                    category = 'person' if plan.operation == 'count_distinct_people' else plan.subject
-                    rows = distinct_detections([row for row in qa_detections.get(item.image_id, ())
-                        if row['label'] == canonical_label(category) and row['score'] >= DETECTION_SCORE])
-                    item.regions = [QARegion(label=f'D{i+1}', box=row['box']) for i, row in enumerate(rows[:40])]
-                    # Proposals are not verified counts, even when Gemini claims completeness.
+                    if item.image_id in qa_detections:
+                        # Detector boxes give stable crops for cosine grouping across images.
+                        category = 'person' if plan.operation == 'count_distinct_people' else plan.subject
+                        rows = distinct_detections([row for row in qa_detections[item.image_id]
+                            if row['label'] == canonical_label(category) and row['score'] >= DETECTION_SCORE])
+                        item.regions = [QARegion(label=f'D{i+1}', box=row['box']) for i, row in enumerate(rows[:40])]
+                    # Without detections (detector missing, slow or failed) Gemini's boxes stand in.
+                    # Either way these are proposals, not verified counts.
                     item.count_visibility = 'partial' if item.regions else 'unknown'
             return result.observations
 
@@ -580,15 +714,26 @@ class ReasoningQA:
                 partial = True
                 observation_budget_exhausted = True
                 return
-            except (QATruncatedOutputError, QAInvalidOutputError) as exc:
+            except QATruncatedOutputError:
+                # Output length grows with the batch: halve it until each image fits.
                 if len(images) == 1:
                     partial = True
-                    if isinstance(exc, QAInvalidOutputError) and not isinstance(exc, QATruncatedOutputError):
-                        invalid_observation_ids.add(images[0].image_id)
                     return
                 midpoint = len(images) // 2
                 await record_observations(images[:midpoint])
                 await record_observations(images[midpoint:])
+                return
+            except QAInvalidOutputError:
+                # Schema repair already retried this batch. Re-read each image once so one bad image
+                # does not discard the others, within a small per-request budget to protect quota.
+                partial = True
+                full = [item for item in images if item.kind == 'full_image']
+                if len(full) > 1 and isolation_budget[0] >= len(full):
+                    isolation_budget[0] -= len(full)
+                    for item in full:
+                        await record_observations([item])
+                    return
+                invalid_observation_ids.update(item.image_id for item in full)
                 return
             except QAClientError as exc:
                 if not provider_down(exc) or not observations:
@@ -599,6 +744,11 @@ class ReasoningQA:
                 observation_budget_exhausted = True
                 return
             observations.extend(result)
+            returned = {o.image_id for o in result}
+            missing = [item for item in images if item.kind == 'full_image' and item.image_id not in returned]
+            if missing:
+                partial = True
+                invalid_observation_ids.update(item.image_id for item in missing)
             self._progress(owner, cid, rid)['examined_ids'] = [o.image_id for o in observations]
             self._progress(owner, cid, rid)['observations'] = [o.model_dump() for o in observations]
 
@@ -607,14 +757,57 @@ class ReasoningQA:
             engine = self.service.search_engine
             if not hasattr(engine, 'encode_image_crops'):
                 return
-            keys, crops = await asyncio.to_thread(prepare_object_crops, observations, evidence)
+            if hasattr(engine, 'indexed_crop_vector'):
+                # A box that matches an indexed region reuses its stored vector (same model, same crop),
+                # so only boxes the index does not hold are encoded on the CPU.
+                for observation in observations:
+                    if observation.image_id not in evidence:
+                        continue
+                    for number, region in enumerate(observation.regions):
+                        key = (observation.image_id, number)
+                        if key not in crop_cache:
+                            vector = engine.indexed_crop_vector(observation.image_id, region.box)
+                            if vector is not None:
+                                crop_cache[key] = vector
+            keys, crops = await asyncio.to_thread(prepare_object_crops, list(observations), evidence)
             todo = [(key, crop) for key, crop in zip(keys, crops) if key not in crop_cache]
             if not todo or deadline <= time.monotonic():
                 return
-            encoded = await asyncio.wait_for(engine.encode_image_crops([crop for _, crop in todo]),
-                                             deadline - time.monotonic())
-            if len(encoded) == len(todo):
-                crop_cache.update({key: vector for (key, _), vector in zip(todo, encoded)})
+            # Keep completed batches if CPU inference runs out of time; a single
+            # timed-out call over all crops previously discarded every vector.
+            for offset in range(0, len(todo), 4):
+                batch = todo[offset:offset + 4]
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Crop embedding budget exhausted')
+                encoded = await asyncio.wait_for(engine.encode_image_crops([crop for _, crop in batch]), remaining)
+                if len(encoded) != len(batch):
+                    raise ValueError('Crop embedding count mismatch')
+                crop_cache.update({key: vector for (key, _), vector in zip(batch, encoded)})
+
+        def embed_in_background():
+            """Encode crops of the images read so far while Gemini reads the next batch.
+
+            The final estimate then only encodes what is left (41 crops took 70 s at the end before).
+            """
+            task = background_embedding['task']
+            if task is not None and not task.done():
+                return
+            async def work():
+                try:
+                    await encode_missing_crops()
+                except (TimeoutError, RuntimeError, ValueError, OSError):
+                    pass  # The final pass retries and reports what is still missing.
+            try:
+                background_embedding['task'] = asyncio.get_running_loop().create_task(work())
+            except RuntimeError:
+                background_embedding['task'] = None
+
+        async def embed_now():
+            task = background_embedding['task']
+            if task is not None:
+                await task
+            await encode_missing_crops()
 
         async def enough_evidence(distinct_people, corpus_scan):
             """Cheap check after each batch: stop reading when more images would not change the answer."""
@@ -624,7 +817,7 @@ class ReasoningQA:
                 return False  # Exhaustive scans and event counts need every image.
             if distinct_people:
                 try:
-                    await encode_missing_crops()
+                    await embed_now()
                 except (TimeoutError, RuntimeError, ValueError, OSError):
                     return False
                 if not crop_cache:
@@ -706,13 +899,15 @@ class ReasoningQA:
                     '3 optional short detail_queries suitable for region retrieval. Use known facts '
                     'only; never guess the answer. processing_steps are optional bounded operations on '
                     'per-image observations: count counts image records; visible_count is only available '
-                    'for complete visual counts. aggregate sums visible appearances, never unique people.'
+                    'for complete visual counts. aggregate sums visible appearances, never unique people. ' + QA_RULES
                 )))
             plan = apply_distinct_scope(plan, req)
             self._progress(owner, cid, rid)['plan'] = {
                 'question': plan.question, 'subject': plan.subject, 'operation': plan.operation,
                 'answer_scope': plan.answer_scope, 'known_conditions': plan.known_conditions,
                 'information_needed': plan.information_needed, 'queries': plan.queries,
+                'detail_queries': plan.detail_queries,
+                'conditions': [c.model_dump(exclude_none=True) for c in plan.conditions],
                 'clarification': plan.clarification,
             }
             if plan.clarification:
@@ -748,6 +943,7 @@ class ReasoningQA:
             corpus_scan = distinct_people or plan.answer_scope == 'corpus'
             corpus_aggregate = corpus_scan and not distinct_people and plan.operation != 'count_max' and bool(plan.processing_steps)
             scope_candidates = []
+            metadata_ordered_max = False
             if corpus_scan:
                 self.stage(owner, cid, 'scanning', rid)
                 engine = self.service.search_engine
@@ -757,6 +953,20 @@ class ReasoningQA:
                     reason = 'missing_context'
                     message = ('Không xác định được tập ảnh cần rà soát.' if vi else 'The requested image scope could not be resolved.')
                     return
+                # Read the most promising frames first instead of filename order: the most crowded frames
+                # (metadata head count) for a maximum of people, the best metadata match otherwise.
+                metadata_store = getattr(engine, 'image_metadata', None)
+                matcher = getattr(engine, 'metadata_matcher', None)
+                if metadata_store is not None and plan.operation == 'count_max' and canonical_label(plan.subject) == 'person':
+                    def head_count(x):
+                        meta = metadata_store.get(x)
+                        return meta.people_count_estimate if meta is not None else -1
+                    scope_ids = sorted(scope_ids, key=lambda x: -head_count(x))
+                    metadata_ordered_max = True
+                elif matcher is not None and not distinct_people and (plan.queries or plan.detail_queries):
+                    values = matcher.match(' '.join(plan.queries[:1]) or plan.question, plan.detail_queries)
+                    index_of = {x: i for i, x in enumerate(matcher.ids)}
+                    scope_ids = sorted(scope_ids, key=lambda x: -float(values[index_of[x]]) if x in index_of else 0.0)
                 if plan.operation == 'count_distinct_people' and self.people and not plan.known_conditions:
                     exact_people = self.people.tally(scope_ids, vi=vi)
                     if exact_people is not None:
@@ -785,9 +995,35 @@ class ReasoningQA:
             if distinct_people and not queries:
                 queries = [f'{plan.subject} visible in a scene']
             corpus_limit = max(1, min(int(self.service.settings.qa_corpus_max_images), 1000))
+            scene_filters = retrieval_conditions(plan.conditions, plan.operation, plan.subject)
+
+            def diverse_selection(pool):
+                # "How many different people" needs images of DIFFERENT people, not the most similar frames
+                # (which repeat the same person). Person-region vectors pick images that add unseen people.
+                engine = self.service.search_engine
+                if plan.operation != 'count_distinct_people' or not hasattr(engine, 'diverse_person_images'):
+                    return pool[:distinct_top_k]
+                metadata = getattr(engine, 'image_metadata', None)
+                if metadata is not None and not plan.known_conditions and plan.answer_scope == 'corpus':
+                    # Whole-session count: the metadata knows who appears where, so read the most crowded
+                    # frame and one frame per frequent clothing description instead of the frames most
+                    # similar to the question (which repeat the same people).
+                    allowed = set(scope_ids)
+                    picks = coverage_frames(metadata, [x for x in engine.vector_index.ids if x in allowed],
+                                            distinct_top_k)
+                    if picks:
+                        return picks[:distinct_top_k]
+                threshold = float(getattr(self.service.settings, 'qa_distinct_similarity_threshold', .76))
+                return engine.diverse_person_images(pool, distinct_top_k, threshold)
             distinct_top_k = max(1, min(int(getattr(self.service.settings, 'qa_distinct_top_k', 10)), 100))
+            metadata_rerank_on = (bool(getattr(self.service.settings, 'qa_metadata_rerank', False))
+                                  and getattr(self.service.search_engine, 'image_metadata', None) is not None
+                                  and not req.image_id)
+            rerank_cache = {}
             max_rounds = ((min(len(scope_ids), corpus_limit) + 7) // 8 if corpus_scan and not distinct_people
                           else (distinct_top_k + 7) // 8 if distinct_people else 3)
+            if metadata_ordered_max:
+                max_rounds = min(max_rounds, 2)  # the 16 most crowded frames by metadata hold the maximum
             for round_index in range(max_rounds):
                 rounds = round_index+1
                 if provider_failures and observations:
@@ -812,10 +1048,21 @@ class ReasoningQA:
                         if previous_ids:
                             break
                         detail = [x[:180] for x in plan.detail_queries if x.strip()]
-                        if detail and getattr(self.service.search_engine, 'region_index', None):
-                            found, _ = await self.service.search_engine.search(query[:1200], distinct_top_k if distinct_people else 20, detail)
+                        # Distinct counts search a wider pool, then keep images that add new people (below).
+                        pool_k = (max(200, distinct_top_k) if distinct_people  # 200: 10 picks cover 10-15 people vs 3-6 for top-10
+                                  else 100 if metadata_rerank_on else 20)  # wide pool when metadata ranks it
+                        engine = self.service.search_engine
+                        if scene_filters and hasattr(engine, 'search_demo'):
+                            # Same checked retrieval as image search: violating images are dropped and
+                            # images meeting every condition come first.
+                            found, _, _, _, _ = await engine.search_demo(query[:1200], pool_k, detail, 'clip_region',
+                                                                         scene_filters)
+                            if not found:
+                                found, _ = await engine.search(query[:1200], pool_k, detail or None)
+                        elif detail and getattr(self.service.search_engine, 'region_index', None):
+                            found, _ = await self.service.search_engine.search(query[:1200], pool_k, detail)
                         else:
-                            found, _ = await self.service.search_engine.search(query[:1200], distinct_top_k if distinct_people else 20)
+                            found, _ = await self.service.search_engine.search(query[:1200], pool_k)
                         for row in found:
                             boxes = [match for match in row.get('matches', [])
                                      if match.get('box') and match.get('supported', True)]
@@ -825,9 +1072,32 @@ class ReasoningQA:
                     if distinct_people and previous_ids:
                         ranked.append(scope_ids)
                     # Round-robin across query rankings preserves alternative contexts.
-                    candidates = (list(dict.fromkeys(x for rank in ranked for x in rank))[:distinct_top_k]
+                    candidates = (diverse_selection(list(dict.fromkeys(x for i in range(200) for rank in ranked
+                                                                        for x in rank[i:i+1])))
                                   if distinct_people else
-                                  list(dict.fromkeys(x for i in range(20) for rank in ranked for x in rank[i:i+1])))
+                                  list(dict.fromkeys(x for i in range(100 if metadata_rerank_on else 20)
+                                                     for rank in ranked for x in rank[i:i+1])))
+                    if metadata_rerank_on and not distinct_people and candidates:
+                        # One frame per event (up to 80 events) so the text pass compares moments, not
+                        # near-identical frames; the other frames of a chosen event stay available.
+                        events = []
+                        for x in candidates:
+                            if not any(same_event(x, y) for y in events):
+                                events.append(x)
+                            if len(events) >= 80:
+                                break
+                        candidates = events + [x for x in candidates if x not in set(events)][:20]
+                        # One text call over the candidates' metadata puts the frames that fit the whole
+                        # description first, so the images read first are the likely scene.
+                        description = ' | '.join([plan.question] + plan.queries[:1] + plan.detail_queries
+                                                 + plan.known_conditions)
+                        rerank_key = (description, tuple(candidates))
+                        if rerank_key not in rerank_cache:
+                            self.stage(owner, cid, 'ranking', rid)
+                            rerank_cache[rerank_key] = (await rerank(
+                                self.service.client, self.service.search_engine.image_metadata, description,
+                                candidates, keep=8, timeout_s=min(12.0, max(1.0, deadline - time.monotonic() - 30))))[0]
+                        candidates = rerank_cache[rerank_key]
                     searched.update(candidates)
                     if plan.question_type == 'temporal':
                         candidates = list(dict.fromkeys(self.catalog.neighbors(candidates[:4], req.scope)+candidates))
@@ -846,9 +1116,11 @@ class ReasoningQA:
                     deferred = []
                     reference_ids = [item.image_id for item in observations]
                     for x in candidates:
-                        if vectors is not None and x in positions and any(
-                            float(vectors[positions[x]] @ vectors[positions[y]]) > .985
-                            for y in reference_ids + chosen if y in positions):
+                        # Frames ~7 s apart show the same event: read other events first.
+                        if any(same_event(x, y) for y in reference_ids + chosen) or (
+                            vectors is not None and x in positions and any(
+                                float(vectors[positions[x]] @ vectors[positions[y]]) > .985
+                                for y in reference_ids + chosen if y in positions)):
                             deferred.append(x)
                         else:
                             chosen.append(x)
@@ -887,33 +1159,53 @@ class ReasoningQA:
                         return work  # No running loop (synchronous driver): await in order.
 
                 batches = [candidates[offset:offset+batch_size] for offset in range(0, len(candidates), batch_size)]
-                pending_detection = start_detection(batches[0]) if batches else None
+                # Reading calls of one wave run together (QA_PARALLEL_READS); the early stop is checked after
+                # each wave, so a question that is settled early still stops early.
+                # The first batch is read alone: candidates are ranked, so it often settles the question and
+                # the early stop then saves every later call. Later batches are read `parallel` at a time;
+                # the stable-answer mode compares consecutive batches, so it always reads one at a time.
+                parallel = 1 if stable_reading else max(1, int(getattr(self.service.settings, 'qa_parallel_reads', 1)))
+                waves = batches[:1] and [batches[:1]] + [batches[i:i + parallel] for i in range(1, len(batches), parallel)]
+                pending_detection = start_detection([x for b in waves[0] for x in b]) if waves else None
                 try:
-                    for batch_index, batch_ids in enumerate(batches):
+                    for wave_index, wave in enumerate(waves):
                         if distinct_people and deadline - time.monotonic() <= distinct_reserve_s:
                             partial = True
                             observation_budget_exhausted = True
                             break
-                        images = []
                         if pending_detection is not None:
                             qa_detections.update(await pending_detection)
-                        pending_detection = (start_detection(batches[batch_index + 1])
-                                             if batch_index + 1 < len(batches) else None)
-                        for image_id in batch_ids:
-                            bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
-                                image_id, plan.question, image_id, None, False)
-                            evidence[image_id] = bundle.items[0]
-                            images.append(bundle.items[0])
-                            seen.add(image_id)
-                        await record_observations(images)
+                        pending_detection = (start_detection([x for b in waves[wave_index + 1] for x in b])
+                                             if wave_index + 1 < len(waves) else None)
+                        loaded = []
+                        for batch_ids in wave:
+                            images = []
+                            for image_id in batch_ids:
+                                bundle = await asyncio.to_thread(self.service.evidence_loader.load_for_image,
+                                    image_id, plan.question, image_id, None, False)
+                                evidence[image_id] = bundle.items[0]
+                                images.append(bundle.items[0])
+                                seen.add(image_id)
+                            loaded.append(images)
+                        try:
+                            asyncio.get_running_loop()
+                            concurrent = len(loaded) > 1
+                        except RuntimeError:
+                            concurrent = False  # synchronous driver (tests): read in order
+                        if concurrent:
+                            await asyncio.gather(*(record_observations(images) for images in loaded))
+                        else:
+                            for images in loaded:
+                                await record_observations(images)
+                        if distinct_people:
+                            embed_in_background()
                         if observation_budget_exhausted:
                             break
-                        if (not req.image_id and batch_index + 1 < len(batches)
+                        if (not req.image_id and wave_index + 1 < len(waves)
                                 and await enough_evidence(distinct_people, corpus_scan)):
                             stopped_early = True
-                            skipped_ids = [x for batch in batches[batch_index + 1:] for x in batch]
-                            log.info('qa_early_stop request_id=%s read=%d skipped=%d', rid, len(seen),
-                                     sum(len(batch) for batch in batches[batch_index + 1:]))
+                            skipped_ids = [x for later in waves[wave_index + 1:] for b in later for x in b]
+                            log.info('qa_early_stop request_id=%s read=%d skipped=%d', rid, len(seen), len(skipped_ids))
                             break
                 finally:
                     if isinstance(pending_detection, asyncio.Future):
@@ -931,8 +1223,8 @@ class ReasoningQA:
                             break
                         try:
                             new, = await observe(bundle.items[:4], zoom=True)
-                        except QATruncatedOutputError:
-                            continue
+                        except QAInvalidOutputError:
+                            continue  # Keep the original observation; the zoom only refines it.
                         except QAClientError as exc:
                             if not provider_down(exc):
                                 raise
@@ -953,7 +1245,9 @@ class ReasoningQA:
                         continue
                 if plan.operation == 'count_max' or corpus_aggregate:
                     checked = {o.image_id for o in observations}
-                    if set(scope_ids) - checked:
+                    # With metadata ordering the most crowded frames were read first, so the maximum is
+                    # answered from them (and says so) instead of requiring every frame of the corpus.
+                    if set(scope_ids) - checked and not metadata_ordered_max:
                         if len(seen) < min(len(scope_ids), corpus_limit) and round_index + 1 < max_rounds:
                             continue
                         partial = True
@@ -989,7 +1283,11 @@ class ReasoningQA:
                                     evidence_ids=[o.image_id]) for o in winners]
                     answer = ('Số lượng lớn nhất là ' if vi else 'The largest count is ') + str(maximum)
                     answer += ('; ảnh: ' if vi else '; images: ') + ', '.join(o.image_id for o in winners) + '.'
-                    draft = Draft(status='answered', answer=answer, claims=claims)
+                    if metadata_ordered_max:
+                        answer += (f' Đã đếm lại trên {len(observations)} khung đông người nhất theo metadata của toàn bộ ảnh.'
+                                   if vi else f' Recounted on the {len(observations)} most crowded frames by the metadata of every image.')
+                    draft = Draft(status='answered', answer=answer, claims=claims,
+                                  short_answer=(f'{maximum} {noun}' if vi else str(maximum)))
                 if plan.question_type == 'temporal' and not self.catalog.records:
                     relevant = [o for o in observations if o.context_match == 'yes']
                     reason = 'unverified_sequence'
@@ -1015,6 +1313,7 @@ class ReasoningQA:
                         queries = plan.queries
                         continue
                 elif plan.operation in {'count_visible', 'count_distinct_people', 'count_distinct_objects'} and not corpus_aggregate:
+                    scene_alternatives = []
                     usable = [o for o in observations if o.image_id not in rejected_count_ids
                               and o.context_match == 'yes' and (
                         o.count_visibility == 'complete' or
@@ -1025,10 +1324,19 @@ class ReasoningQA:
                         usable = [o for o in usable if o.regions]
                         usable = sorted(usable, key=lambda o: -len(o.regions))[:1]
                     elif plan.answer_scope == 'scene' and len({len(o.regions) for o in usable}) > 1:
-                        reason = 'conflicting_evidence'
-                        message = ('Các ảnh phù hợp cho số đếm khác nhau. Bạn muốn dùng ảnh nào?' if vi
-                                   else 'Matching images show different counts. Which image should I use?')
-                        return
+                        # One described moment needs one number: take the frame that fits the description
+                        # best and name the other close frames, instead of asking which image to use.
+                        matcher = getattr(self.service.search_engine, 'metadata_matcher', None)
+                        meta_scores = {}
+                        if matcher is not None:
+                            values = matcher.match(' '.join(plan.queries[:1]) or plan.question, plan.detail_queries)
+                            index_of = {x: i for i, x in enumerate(matcher.ids)}
+                            meta_scores = {o.image_id: float(values[index_of[o.image_id]])
+                                           for o in usable if o.image_id in index_of}
+                        ordered = rank_scene_matches(usable, retrieved, meta_scores)
+                        usable = ordered[:1]
+                        scene_alternatives = [(o.image_id, len(o.regions)) for o in ordered[1:3]
+                                              if len(o.regions) != len(ordered[0].regions)]
                     elif plan.answer_scope != 'per_image':
                         usable = sorted(usable, key=lambda o: o.count_visibility != 'complete')[:1]
                     if usable:
@@ -1050,10 +1358,20 @@ class ReasoningQA:
                                 label = f'{item.image_id} shows {count} matching instances.'
                             summaries.append(Claim(text=label, evidence_ids=[item.image_id]))
                         answer = ' '.join(claim.text for claim in summaries[:3])
+                        if scene_alternatives:
+                            others = ', '.join(f'{i} ({n})' for i, n in scene_alternatives)
+                            answer += (f' Ảnh khớp mô tả nhất được chọn; ảnh gần khớp khác cho số khác: {others}.' if vi
+                                       else f' The best-matching frame was used; other close frames differ: {others}.')
                         if len(summaries) > 3:
                             answer += (' Xem số đếm của các ảnh còn lại trong phần bằng chứng.' if vi
                                        else ' See the evidence for counts in the other images.')
-                        draft = Draft(status='answered', answer=answer, claims=summaries)
+                        short = None
+                        if len(usable) == 1 and not distinct_people:
+                            n = len(usable[0].regions)
+                            partial_count = usable[0].count_visibility == 'partial'
+                            noun = ('người' if vi else 'people') if canonical_label(plan.subject) == 'person' else ''
+                            short = ((('ít nhất ' if vi else 'at least ') if partial_count else '') + f'{n} {noun}').strip()
+                        draft = Draft(status='answered', answer=answer, claims=summaries, short_answer=short)
                     else:
                         if not qa_detections:
                             reason = 'detector_unavailable'
@@ -1081,7 +1399,7 @@ class ReasoningQA:
                                              checks=[c.model_dump() for c in x.checks])
                                         for x in observations if x.context_match != 'yes'],
                             scope=req.scope.model_dump() if req.scope else None,
-                            instructions='Synthesize 1-3 short sentences. Treat supplied Python aggregation results as authoritative, and cite their image IDs. Each claim needs supporting image IDs. Comparisons must cite both sides. For arithmetic include operands, result and source IDs in calculations. Report separate scenes if they differ. For corpus totals or absence abstain unless evidence establishes the full scope. For follow-ups use only the supplied prior evidence. Never interpret summed appearances as distinct people or independent events. If scenes cannot be resolved return ambiguous with a clarification in message. Suggest new English queries for the specific detail still missing.'))
+                            instructions='Synthesize 1-3 short sentences. Treat supplied Python aggregation results as authoritative, and cite their image IDs. Each claim needs supporting image IDs. Comparisons must cite both sides. For arithmetic include operands, result and source IDs in calculations. Report separate scenes if they differ. For corpus totals or absence abstain unless evidence establishes the full scope. For follow-ups use only the supplied prior evidence. Never interpret summed appearances as distinct people or independent events. If scenes cannot be resolved return ambiguous with a clarification in message. Suggest new English queries for the specific detail still missing. When answered, also give short_answer: only the bare answer a person would submit (a number with its noun, a colour, an object, yes/no), at most 8 words, in the answer language, with no image IDs or caveats.'))
                         except QAClientError as exc:
                             if not provider_down(exc):
                                 raise
@@ -1222,14 +1540,17 @@ class ReasoningQA:
         accepted = draft is not None and draft.status == 'answered' and bool(draft.claims)
         claims = [QAClaim(**c.model_dump()) for c in draft.claims] if accepted else []
         answer = draft.answer if accepted else None
+        short_answer = (draft.short_answer or None) if accepted else None
         if exact_people is not None:
             count, claims, _ = exact_people
             accepted = True
+            short_answer = f'{count} người' if vi else str(count)
             answer = (f'Có {count} người khác nhau xuất hiện trong {len(scope_ids)} ảnh đã kiểm duyệt.' if vi
                       else f'{count} distinct people appear across {len(scope_ids)} reviewed images.')
         if reviewed_max is not None:
             maximum, winners = reviewed_max
             accepted = True
+            short_answer = f'{maximum} người' if vi else str(maximum)
             answer = ((f'Số người nhiều nhất là {maximum}; ảnh: ' if vi
                        else f'The largest count is {maximum}; images: ') + ', '.join(winners) + '.')
             claims = [QAClaim(text=(f'Ảnh {image_id} có {maximum} người đã kiểm duyệt.' if vi
@@ -1285,6 +1606,13 @@ class ReasoningQA:
         checked_ids = [o.image_id for o in observations]
         coverage = None
         if scope_ids:
+            # On-demand detection coverage: images the detector ran on, and those with the subject.
+            detect_label = ('person' if plan and plan.operation == 'count_distinct_people'
+                            else canonical_label(plan.subject) if plan else None)
+            indexed_count = len(set(scope_ids) & set(qa_detections))
+            people_candidate_count = sum(1 for image_id in scope_ids if any(
+                row.get('label') == detect_label and row.get('score', 0) >= DETECTION_SCORE
+                for row in qa_detections.get(image_id, ())))
             verified_ids = {image_id for check in verification_records
                             if check['supported'] and not check['conflicts'] and not check['missing']
                             for image_id in check['image_ids']}
@@ -1300,7 +1628,7 @@ class ReasoningQA:
             if hasattr(engine, 'encode_image_crops'):
                 self.stage(owner, cid, 'embedding', rid)
                 try:
-                    await encode_missing_crops()
+                    await embed_now()
                 except (TimeoutError, RuntimeError, ValueError, OSError):
                     log.warning('qa_crop_embedding_unavailable request_id=%s', rid)
                 keys, _ = await asyncio.to_thread(prepare_object_crops, observations, evidence)
@@ -1315,6 +1643,8 @@ class ReasoningQA:
                     not stopped_early and len(checked_ids) < distinct_estimate['requested_images'])
                 distinct_estimate['stopped_early'] = stopped_early
                 distinct_estimate['region_source'] = 'grounding_dino_on_demand'
+                if crop_vectors:
+                    distinct_estimate['embedding_model'] = getattr(self.service.settings, 'embed_model_name', 'CLIP') + ' crop'
             elif any(o.context_match == 'yes' and o.regions for o in observations):
                 explanation = ('Chưa tính được cosine cho các vùng đã phát hiện; hãy thử lại hoặc giảm số ảnh cần xét.' if vi
                                else 'Could not compute cosine for the detected regions; retry or reduce the image limit.')
@@ -1329,6 +1659,7 @@ class ReasoningQA:
                 message = (message or '') + ' ' + count_note
             if accepted and distinct_estimate:
                 count = distinct_estimate['estimated_count']
+                short_answer = f'{count} người' if vi and plan.operation == 'count_distinct_people' else str(count)
                 image_count = distinct_estimate['examined_images']
                 noun = 'người' if plan.operation == 'count_distinct_people' and vi else plan.subject
                 answer = (f'Ước lượng {count} {noun} khác nhau trong {image_count} ảnh đã đọc; '
@@ -1343,7 +1674,7 @@ class ReasoningQA:
             question_type=plan.question_type if plan else None,
             operation=plan.operation if plan else None,
             status='answered' if accepted else ('ambiguous' if reason in {'missing_context', 'conflicting_evidence'} else 'insufficient_evidence'),
-            answer=answer, message=None if accepted else message,
+            answer=answer, short_answer=short_answer, message=None if accepted else message,
             identity_match_candidates=match_candidates,
             distinct_estimate=distinct_estimate,
             reason_code=None if accepted else reason, evidence=items, claims=claims, partial=partial,

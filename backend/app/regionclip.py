@@ -21,6 +21,10 @@ def has_unit_region_vectors(vectors):
 
 
 class RegionClipIndex(RegionIndex):
+    # Labels reported with each match; the engine sets global_label to the loaded whole-image model.
+    model_label = 'RegionCLIP-RN50'
+    global_label = 'CLIP-ViT-B-32'
+
     def __init__(self, vectors, records, ids, version):
         super().__init__(vectors, records, ids, version)
         self.context_vectors = None
@@ -164,6 +168,61 @@ class RegionClipIndex(RegionIndex):
             matches=[]
             for j,text in enumerate(texts):
                 r=self.records[winners[i,j]] if has[i] else None
-                matches.append({'query':text,'score':float(scores[i,j]) if r else float(global_scores[i]),'source':'region' if r else 'whole_image','box':r['box'] if r else None,'kind':r['kind'] if r else None,'region_id':f'{self.version}:{int(winners[i,j])}' if r else None,'objects':r.get('objects',[]) if r else [],'model':'RegionCLIP-RN50' if r else 'CLIP-ViT-B-32'})
+                matches.append({'query':text,'score':float(scores[i,j]) if r else float(global_scores[i]),'source':'region' if r else 'whole_image','box':r['box'] if r else None,'kind':r['kind'] if r else None,'region_id':f'{self.version}:{int(winners[i,j])}' if r else None,'objects':r.get('objects',[]) if r else [],'model':self.model_label if r else self.global_label})
             results.append({'id':ids[i],'score':float(fused[i]),'matches':matches,'ranking':{'method':'rrf','clip_rank':int(gr[i]),'regionclip_rank':int(rr[i]) if has[i] else None,'clip_score':float(global_scores[i]),'regionclip_score':float(detail_score[i]) if has[i] else None}})
         return results
+
+
+class SigLipRegionIndex(RegionClipIndex):
+    """RegionCLIP proposals encoded in the whole-image SigLIP 2 space."""
+
+    model_label = 'SigLIP2-regions'
+
+    @classmethod
+    def load(cls, directory, ids, text_encoder, model, pretrained):
+        directory = Path(directory)
+        manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        if (manifest.get('schema') != 'siglip-regions-v1' or manifest.get('complete') is not True
+                or manifest.get('model') != model or manifest.get('pretrained') != pretrained
+                or manifest.get('num_images') != len(ids)):
+            raise ValueError('Incomplete or incompatible SigLIP region index')
+        files = manifest.get('files', {})
+        if set(files) != {'regions.npy', 'context.npy', 'text_parity.json'}:
+            raise ValueError('Unexpected SigLIP region files')
+        for name, expected in files.items():
+            if sha256(directory / name) != expected:
+                raise ValueError('Checksum mismatch: ' + name)
+        if sha256(directory / 'regions.json') != manifest.get('regions_sha256'):
+            raise ValueError('Checksum mismatch: regions.json')
+        records = json.loads((directory / 'regions.json').read_text(encoding='utf-8'))
+        count, dim = manifest['num_regions'], manifest['dim']
+        if len(records) != count or not set(r['id'] for r in records).issubset(set(ids)):
+            raise ValueError('Invalid SigLIP region records')
+        arrays = []
+        for name in ('regions.npy', 'context.npy'):
+            source = np.load(directory / name, mmap_mode='r', allow_pickle=False)
+            if source.shape != (count, dim) or source.dtype != np.float16:
+                raise ValueError('Invalid SigLIP array: ' + name)
+            for offset in range(0, count, 2048):
+                norms = np.linalg.norm(np.asarray(source[offset:offset + 2048], dtype=np.float32), axis=1)
+                if not np.isfinite(norms).all() or not np.allclose(norms, 1, atol=2e-2):
+                    raise ValueError('Invalid SigLIP vector norms: ' + name)
+            # Region vectors are scanned on every query, so keep them in RAM as float32. Context vectors
+            # are read only row-by-row when context_weight > 0: leave them memory-mapped as float16.
+            arrays.append(np.asarray(source, dtype=np.float32) if name == 'regions.npy' else source)
+        obj = cls(arrays[0], records, ids, 'siglip2:' + files['regions.npy'][:16])
+        obj.manifest = manifest
+        # Region vectors are plain crops encoded by this model: the same space as the engine's crop encoder.
+        obj.model_name, obj.pretrained = model, pretrained
+        obj.context_vectors = arrays[1]
+        obj._text_encoder = text_encoder
+        return obj
+
+    def encode(self, texts):
+        values = np.asarray(self._text_encoder(list(texts)), dtype=np.float32)
+        if values.shape != (len(texts), self.manifest['dim']) or not np.isfinite(values).all():
+            raise ValueError('Invalid SigLIP text vectors')
+        norms = np.linalg.norm(values, axis=1, keepdims=True)
+        if np.any(norms < 1e-8):
+            raise ValueError('Zero SigLIP text vector')
+        return np.ascontiguousarray(values / norms, dtype=np.float32)

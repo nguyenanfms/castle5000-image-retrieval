@@ -27,8 +27,12 @@ faiss.omp_set_num_threads(1)
 torch.set_num_threads(1)
 
 from .config import Settings
-from .regions import RegionIndex
-from .regionclip import RegionClipIndex
+from .image_metadata import MetadataStore
+from .metadata_search import MetadataMatcher
+from .events import neighbour_lists, one_per_event, smooth
+from .person_crops import PersonCrops
+from .regions import RegionIndex, iou
+from .regionclip import RegionClipIndex, SigLipRegionIndex
 from .search_conditions import canonical_label, positive_checks, rank_checked_shortlist
 from .ondemand_detector import OnDemandDetector
 
@@ -102,6 +106,7 @@ class SearchEngine:
         self.condition_detections, self.condition_detector_version = {}, None
         self.detector = OnDemandDetector(settings.images_dir, settings.detection_model_dir,
                                          threads=settings.detection_threads)
+        self.person_crops = self._load_person_crops()
         self.region_index = None
         self.region_notice = 'Chỉ mục vùng chưa sẵn sàng; điều kiện chi tiết dùng toàn ảnh làm dự phòng.'
         try:
@@ -110,27 +115,107 @@ class SearchEngine:
         except (OSError, ValueError, KeyError, RuntimeError) as exc:
             logging.getLogger('retrieval').warning('Region index unavailable: %s', exc)
         self._global_vectors = self.vector_index.index.reconstruct_n(0, self.num_images)
+        self.image_metadata, self.metadata_matcher = self._load_image_metadata()
         self._load_model()
+        if isinstance(self.region_index, SigLipRegionIndex):
+            self._validate_siglip_parity(self.region_index, settings.region_index_dir)
+
+    def _load_image_metadata(self):
+        """Gemini metadata (tools/merge_metadata.py). Missing or broken: search runs on SigLIP alone."""
+        path = getattr(self.settings, 'image_metadata_dir', None)
+        if path is None or not (Path(path) / 'manifest.json').exists():
+            return None, None
+        try:
+            store = MetadataStore.load(path, self.vector_index.ids)
+            matcher = MetadataMatcher(store, self.vector_index.ids)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logging.getLogger('retrieval').warning('image_metadata_unavailable path=%s error=%s', path, exc)
+            return None, None
+        logging.getLogger('retrieval').info('image_metadata_loaded images=%d', matcher.coverage)
+        return store, matcher
+
+    def global_scores(self, query: str, vec: np.ndarray, details=()) -> np.ndarray:
+        """SigLIP score of every image plus the metadata text match (search_metadata_weight)."""
+        scores = self._global_vectors @ vec[0]
+        weight = getattr(self.settings, 'search_metadata_weight', 0.0)
+        matcher = getattr(self, 'metadata_matcher', None)
+        if matcher is not None and weight > 0 and query:
+            scores = scores + matcher.bonus(query, scores, weight, details)
+        return scores
+
+    def event_neighbours(self):
+        cached = getattr(self, '_event_neighbours', None)
+        window = int(getattr(self.settings, 'search_event_window_s', 0))
+        if cached is None or cached[0] != window:
+            cached = (window, neighbour_lists(self.vector_index.ids, window) if window > 0 else None)
+            self._event_neighbours = cached
+        return cached[1]
+
+    def rank_global(self, query: str, vec: np.ndarray, k: int, details=()) -> list[dict]:
+        """Rows like VectorIndex.search_vector, ranked by global_scores, smoothed over each event's frames,
+        and (search_one_per_event) one frame per event."""
+        has_metadata = (getattr(self, 'metadata_matcher', None) is not None
+                        and getattr(self.settings, 'search_metadata_weight', 0.0) > 0 and query)
+        neighbours = self.event_neighbours() if hasattr(self, 'vector_index') else None
+        if not has_metadata and neighbours is None:
+            return self.vector_index.search_vector(vec, k)
+        scores = self.global_scores(query, vec, details) if has_metadata else self._global_vectors @ vec[0]
+        if neighbours is not None:
+            scores = smooth(scores, neighbours, float(getattr(self.settings, 'search_event_share', 0.0)))
+        k = min(k, len(scores))
+        if neighbours is not None and getattr(self.settings, 'search_one_per_event', False):
+            order = np.argsort(-scores, kind='stable')
+            top = one_per_event(order, self.vector_index.ids, neighbours, k)
+        else:
+            top = np.argpartition(-scores, k - 1)[:k] if k < len(scores) else np.arange(len(scores))
+            top = top[np.argsort(-scores[top], kind='stable')]
+        return [{'id': self.vector_index.ids[i], 'score': float(scores[i])} for i in top]
+
+    def _load_person_crops(self):
+        path = getattr(self.settings, 'person_crops_dir', None)
+        if path is None or not (Path(path) / 'manifest.json').exists():
+            return None
+        try:
+            store = PersonCrops.load(path, self.vector_index.ids, self.settings.embed_model_name,
+                                     self.settings.embed_pretrained)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logging.getLogger('retrieval').warning('person_crops_unavailable path=%s error=%s', path, exc)
+            return None
+        self.detector.precomputed.update(store.detections)
+        logging.getLogger('retrieval').info('person_crops_loaded labels=%s images=%d crops=%d', ','.join(store.detections), store.manifest['num_images'], len(store.vectors))
+        return store
 
     def _load_regions(self, path):
+        index = self._load_region_index(path)
+        if isinstance(index, RegionClipIndex):
+            index.global_label = self.settings.embed_model_name
+        return index
+
+    def _load_region_index(self, path):
         manifest=json.loads((path/'manifest.json').read_text())
+        if manifest.get('schema')=='siglip-regions-v1':
+            return SigLipRegionIndex.load(path, self.vector_index.ids,
+                lambda texts: self._encode_text_sync(texts),
+                self.settings.embed_model_name, self.settings.embed_pretrained)
         if manifest.get('schema')=='regionclip-v1':
             return RegionClipIndex.load(path,self.vector_index.ids)
         return RegionIndex.load(path,self.vector_index.ids,self.settings.embed_model_name,self.settings.embed_pretrained,self.vector_index.index.d)
 
-    def person_scores(self):
-        """Per image, the highest RegionCLIP similarity to "person"; computed once per region index."""
+    def person_regions(self):
+        """Per image, boxes of indexed regions of kind "person"; computed once per region index."""
         index = self.region_index
-        if not isinstance(index, RegionClipIndex):
+        records = getattr(index, 'records', None)
+        if not records:
             return None
-        cached = getattr(self, '_person_scores', None)
+        cached = getattr(self, '_person_regions', None)
         if cached is not None and cached[0] == index.version:
             return cached[1]
-        best = np.full(len(self.vector_index.ids), -1.0, dtype=np.float32)
-        np.maximum.at(best, index.owners, index.vectors @ index.encode(['person'])[0])
-        scores = dict(zip(self.vector_index.ids, best.tolist()))
-        self._person_scores = (index.version, scores)
-        return scores
+        boxes = {}
+        for record in records:
+            if record.get('kind') == 'person' and record.get('box'):
+                boxes.setdefault(record['id'], []).append(record['box'])
+        self._person_regions = (index.version, boxes)
+        return boxes
 
     def refresh_regions(self):
         """Activate a completed build without disrupting whole-image search."""
@@ -143,10 +228,30 @@ class SearchEngine:
             loaded = self._load_regions(path)
         except (OSError, ValueError, KeyError, RuntimeError):
             return
+        if isinstance(loaded, SigLipRegionIndex) and not self._validate_siglip_parity(loaded, path):
+            return
         self.region_index = loaded
         self.region_notice = None
         with self._cache_lock:
             self._cache.clear()
+
+    def _validate_siglip_parity(self, index, path):
+        try:
+            parity = json.loads((path / 'text_parity.json').read_text(encoding='utf-8'))
+            actual = index.encode(parity['texts'])
+            expected = np.asarray(parity['vectors'], dtype=np.float32)
+            if expected.shape != actual.shape or not np.isfinite(expected).all():
+                raise ValueError('Invalid reference text vectors')
+            norms = np.linalg.norm(expected, axis=1, keepdims=True)
+            if np.any(norms < 1e-8) or np.any(np.sum(actual * (expected / norms), axis=1) < .99):
+                raise ValueError('Text encoder parity below 0.99')
+            return True
+        except (OSError, ValueError, KeyError, RuntimeError, TypeError) as exc:
+            logging.getLogger('retrieval').warning('SigLIP region index disabled: %s', exc)
+            if self.region_index is index:
+                self.region_index = None
+            self.region_notice = 'Chỉ mục vùng SigLIP chưa tương thích; đang dùng tìm kiếm toàn ảnh.'
+            return False
 
     def _load_model(self) -> None:
         s = self.settings
@@ -178,13 +283,83 @@ class SearchEngine:
 
     def _encode_image_crops_sync(self, crops):
         vectors = []
-        for start in range(0, len(crops), 16):
-            batch = torch.stack([self._image_preprocess(image) for image in crops[start:start + 16]]).to(self.device)
-            with torch.no_grad():
-                features = self.model.encode_image(batch)
-                features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-            vectors.append(features.cpu().numpy().astype('float32'))
+        # The app runs torch on one thread (see top of file); like Grounding DINO, crop encoding
+        # borrows the detector's thread count, which stays 1 on macOS. 8 SigLIP2 crops: 42 s -> a few s.
+        previous = torch.get_num_threads()
+        torch.set_num_threads(max(1, int(getattr(self.detector, 'threads', 1) or 1)))
+        try:
+            for start in range(0, len(crops), 16):
+                batch = torch.stack([self._image_preprocess(image) for image in crops[start:start + 16]]).to(self.device)
+                with torch.no_grad():
+                    features = self.model.encode_image(batch)
+                    features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                vectors.append(features.cpu().numpy().astype('float32'))
+        finally:
+            torch.set_num_threads(previous)
         return np.concatenate(vectors) if vectors else np.empty((0, 0), dtype='float32')
+
+    def crop_vectors_share_space(self):
+        """True when region-index vectors are crops encoded by the same model as encode_image_crops."""
+        index = self.region_index
+        return (index is not None and getattr(index, 'records', None) is not None
+                and getattr(index, 'model_name', None) == self.settings.embed_model_name
+                and getattr(index, 'pretrained', None) == self.settings.embed_pretrained)
+
+    def indexed_crop_vector(self, image_id, box, min_iou=0.85):
+        """Precomputed vector of an indexed region that is almost the same box, else None.
+
+        Exact crops reproduce the stored vector (cosine 1.0); a 5% box shift still gives 0.93-0.99,
+        so only near-identical boxes are reused and the rest are encoded.
+        """
+        store = getattr(self, 'person_crops', None)
+        if store is not None:
+            vector = store.vector_for(image_id, box)
+            if vector is not None:
+                return vector
+        if not self.crop_vectors_share_space():
+            return None
+        index = self.region_index
+        best, row = 0.0, None
+        for candidate in index.rows_by_image.get(image_id, ()):
+            overlap = iou(box, index.records[candidate]['box'])
+            if overlap > best:
+                best, row = overlap, candidate
+        return np.asarray(index.vectors[row], dtype=np.float32) if row is not None and best >= min_iou else None
+
+    def diverse_person_images(self, ranked_ids, k, threshold):
+        """Pick up to k images that show people not yet covered, using indexed person-region vectors.
+
+        Greedy coverage: each step takes the image with the most person regions whose best cosine to
+        every already-covered region is below threshold (ties keep the retrieval order). Images without
+        indexed people, or once nothing new is gained, follow in retrieval order. Without a region index
+        in the crop vector space the retrieval order is returned unchanged.
+        """
+        ranked_ids = list(dict.fromkeys(ranked_ids))
+        if k <= 0 or not self.crop_vectors_share_space():
+            return ranked_ids[:max(0, k)]
+        index = self.region_index
+        rows = {image_id: [r for r in index.rows_by_image.get(image_id, ())
+                           if index.records[r].get('kind') == 'person'] for image_id in ranked_ids}
+        pool = [image_id for image_id in ranked_ids if rows[image_id]]
+        if not pool:
+            return ranked_ids[:k]
+        vectors = {image_id: np.asarray(index.vectors[rows[image_id]], dtype=np.float32) for image_id in pool}
+        covered = np.empty((0, index.vectors.shape[1]), dtype=np.float32)
+        chosen = []
+        while len(chosen) < k:
+            best, best_gain = None, 0
+            for image_id in pool:
+                if image_id in chosen:
+                    continue
+                v = vectors[image_id]
+                gain = int(len(v)) if not len(covered) else int(((v @ covered.T).max(axis=1) < threshold).sum())
+                if gain > best_gain:
+                    best, best_gain = image_id, gain
+            if best is None:
+                break
+            chosen.append(best)
+            covered = np.concatenate([covered, vectors[best]])
+        return (chosen + [x for x in ranked_ids if x not in chosen])[:k]
 
     async def encode_image_crops(self, crops):
         async with self._semaphore:
@@ -214,8 +389,8 @@ class SearchEngine:
     async def _retrieve_shortlist(self, index, query, k, details, candidate_k, threshold, weight, context_weight=0.0):
         vec = await self.encode_text(query)
         if not details or not isinstance(index, RegionClipIndex):
-            return self.vector_index.search_vector(vec, k)
-        baseline = self.vector_index.search_vector(vec, max(k, candidate_k))
+            return self.rank_global(query, vec, k, details)
+        baseline = self.rank_global(query, vec, max(k, candidate_k), details)
         ranked = await asyncio.to_thread(index.rank_shortlist, baseline, details,
                                          candidate_k, threshold, weight, context_weight)
         return ranked[:k]
@@ -240,7 +415,7 @@ class SearchEngine:
         started = time.perf_counter()
         checked = None
         if actual_mode == 'clip_region' and conditions:
-            baseline = self.vector_index.search_vector(await self.encode_text(query), self.num_images)
+            baseline = self.rank_global(query, await self.encode_text(query), self.num_images, details)
             labels = {canonical_label(value) for c in conditions
                       if c.kind not in {'action', 'other'} for value in (c.subject, c.target) if value} if use_detector else set()
             labels.discard(None)
@@ -249,17 +424,20 @@ class SearchEngine:
                 time.monotonic() + self.settings.detection_timeout_s) if labels else {}
             ranked, examined = await asyncio.to_thread(
                 rank_checked_shortlist, index, baseline, details, conditions, candidate_k, threshold, weight,
-                detections, target_k=k, person_scores=None if use_detector else self.person_scores(),
+                detections, target_k=k, person_regions=None if use_detector else self.person_regions(),
             )
             checked = len(detections) if use_detector else examined
         elif actual_mode == 'clip_region':
             ranked = await self._retrieve_shortlist(index, query, k, details, candidate_k, threshold, weight)
             checked = candidate_k
         else:
-            ranked = self.vector_index.search_vector(await self.encode_text(query), k)
+            ranked = self.rank_global(query, await self.encode_text(query), k, details)
         results = []
         for rank, row in enumerate(ranked, 1):
-            matches = [{**match, 'source': 'region', 'model': 'RegionCLIP-RN50'} for match in row.get('matches', [])]
+            region_label = getattr(index, 'model_label', 'RegionCLIP-RN50')
+            # Keep labels set by the index (whole-image fallbacks, detector checks); label the rest.
+            matches = [{**match, 'source': match.get('source') or 'region',
+                        'model': match.get('model') or region_label} for match in row.get('matches', [])]
             checks = row.get('conditions') if 'conditions' in row else positive_checks(matches)
             results.append({**row, 'final_rank': rank, 'clip_rank': row.get('clip_rank', rank),
                             'region_evaluated': row.get('region_evaluated', False),
@@ -280,11 +458,11 @@ class SearchEngine:
         t0 = time.perf_counter()
         if not details:
             vec = await self.encode_text(query)
-            results = self.vector_index.search_vector(vec, k)
+            results = self.rank_global(query, vec, k)
         elif isinstance(self.region_index,RegionClipIndex):
             baseline=query or '. '.join(details)
             vec=await self.encode_text(baseline)
-            scores=self._global_vectors@vec[0]
+            scores=self.global_scores(baseline,vec,details)
             results=await asyncio.to_thread(self.region_index.rank_fused,list(details),scores,self.vector_index.ids,k,bool(query))
         else:
             vectors = await self.encode_text(([query] if query else []) + list(details))

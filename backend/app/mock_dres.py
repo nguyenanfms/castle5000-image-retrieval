@@ -84,7 +84,7 @@ async def submit(evaluation_id: str, request: Request, session: str | None = Non
         if len(answers) != 1 or set(answers[0]) != {"text"} or not str(answers[0]["text"]).strip():
             return _error("QA requires one text answer", 412)
         return JSONResponse({"status": True, "submission": "INDETERMINATE",
-                             "description": "Đã nhận, đang chờ trọng tài chấm"}, status_code=202)
+                             "description": "Đã nhận, giáo viên chấm tay"}, status_code=202)
     if answers and "text" in answers[0]:
         return _error("Text is not allowed for a KIS task", 412)
     media_item_name = answers[0].get("mediaItemName", "") if answers else ""

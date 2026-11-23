@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     region_index_dir: Path = REPO_ROOT / "data" / "regions"
     search_detections_path: Path = REPO_ROOT / "data" / "search-detections.json"
+    # Precomputed person boxes + crop vectors (tools/build_person_crops.py); used when present.
+    person_crops_dir: Path = REPO_ROOT / "data" / "person-crops"
     detection_model_dir: Path = REPO_ROOT / ".cache" / "huggingface" / "hub" / "models--IDEA-Research--grounding-dino-tiny" / "snapshots" / "a2bb814dd30d776dcf7e30523b00659f4f141c71"
     # Grounding DINO for count/absence conditions in image search (slow on CPU). QA always uses it.
     search_detection_enabled: bool = False
@@ -58,6 +60,22 @@ class Settings(BaseSettings):
     search_candidate_k: int = Field(default=100, ge=1, le=500)
     search_region_threshold: float = Field(default=0.20, ge=-1.0, le=1.0)
     search_region_weight: float = Field(default=0.25, ge=0.0, le=1.0)
+    # Gemini metadata per image (tools/gemini_metadata.py -> tools/merge_metadata.py). Missing: SigLIP only.
+    image_metadata_dir: Path = REPO_ROOT / "data" / "image-metadata"
+    # Metadata text match added to the SigLIP score, in SigLIP standard deviations (0 = off).
+    search_metadata_weight: float = Field(default=0.5, ge=0.0, le=10.0)
+    # Frames of one event (same hour, within this many seconds; 0 = off). A frame takes search_event_share
+    # of the gap to its best neighbour's score, and with search_one_per_event only the best frame of each
+    # event is listed (the others are in the neighbour strip).
+    search_event_window_s: int = Field(default=14, ge=0, le=120)
+    search_event_share: float = Field(default=0.3, ge=0.0, le=1.0)
+    search_one_per_event: bool = True
+    # One text-only Gemini call ranks ~50 candidates by their metadata before images are read (search
+    # verification picks its 4 frames from the top; QA reads its first batch from the top).
+    search_metadata_rerank: bool = True
+    qa_metadata_rerank: bool = True
+    # Image-reading calls run at the same time within one QA round (1 = one after another).
+    qa_parallel_reads: int = Field(default=2, ge=1, le=4)
     search_plan_api_key: str = ""
     search_plan_api_key_backup: str = ""
     search_plan_model: str = "gemini-3.5-flash-lite"
@@ -88,7 +106,8 @@ class Settings(BaseSettings):
     qa_retrieval_k: int = 10
     qa_max_images: int = 5
     qa_corpus_max_images: int = 128
-    # Calibrated with tools/calibrate_distinct_threshold.py: 0.85 over-counted by ~18%, 0.76 by ~6%.
+    # Belongs to the embedding model; recalibrate with tools/calibrate_distinct_threshold.py after changing it.
+    # ViT-B-32 (this default): 0.76 over-counted by ~6%. SigLIP 2: 0.86 (0.76 under-counts by ~21%).
     qa_distinct_similarity_threshold: float = Field(default=0.76, ge=-1.0, le=1.0)
     qa_distinct_top_k: int = Field(default=10, ge=1, le=100)
     qa_retrieval_strategy: Literal["verified_early_stop", "consensus"] = "verified_early_stop"
@@ -102,14 +121,32 @@ class Settings(BaseSettings):
     qa_provider: str = "openai_compatible"
     qa_base_url: str = ""
     qa_api_key: str = ""
-    # Optional second Gemini key (same model) used when the first is rate limited or overloaded.
+    # Optional extra Gemini keys (same model), tried in order when the active one is rate limited,
+    # out of quota or overloaded.
     qa_api_key_backup: str = ""
+    qa_api_key_backup1: str = ""
+    qa_api_key_backup2: str = ""
+    qa_api_key_backup3: str = ""
+    qa_api_key_backup4: str = ""
+    qa_api_key_backup5: str = ""
+    qa_api_key_backup6: str = ""
+    qa_api_key_backup7: str = ""
+    qa_api_key_backup8: str = ""
+    qa_api_key_backup9: str = ""
     qa_model: str = ""
     # Independent local settings let QA_PROVIDER switch without changing Gemini credentials.
     qa_ollama_base_url: str = "http://127.0.0.1:11434/v1"
     qa_ollama_model: str = "qwen2.5vl:7b"
     qa_prompt_version: str = "qa-v1"
     qa_policy_version: str = "policy-v1"
+
+    @property
+    def qa_backup_keys(self) -> list[str]:
+        """Non-empty QA backup keys in order, without duplicates."""
+        keys = [self.qa_api_key_backup, self.qa_api_key_backup1, self.qa_api_key_backup2, self.qa_api_key_backup3,
+                self.qa_api_key_backup4, self.qa_api_key_backup5, self.qa_api_key_backup6,
+                self.qa_api_key_backup7, self.qa_api_key_backup8, self.qa_api_key_backup9]
+        return [k for k in dict.fromkeys(k.strip() for k in keys) if k]
 
     @property
     def using_default_secret(self) -> bool:

@@ -1,7 +1,8 @@
 numpy
 pillow
 transformers>=4.57.6,<5
-open_clip_torch
+open_clip_torch>=3.0
+timm>=1.0
 torch
 faiss-cpu
 fastapi
