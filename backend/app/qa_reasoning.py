@@ -351,18 +351,19 @@ class RosterPerson(StrictModel):
 
 
 def loose_box(value):
-    """A display box for a roster person: normalized [x1, y1, x2, y2], or None. Unlike counting boxes, a box on
-    Gemini's usual 0-1000 scale is rescaled (it only crops a thumbnail, it never changes a count)."""
-    box = repair_box(value)
-    if box is not None:
-        return box
+    """A display box for a roster person, from Gemini's native box format [ymin, xmin, ymax, xmax] on a 0-1000
+    (or 0-1) scale, returned as normalized [x1, y1, x2, y2]; None when unusable. Display only: it crops a
+    thumbnail and never changes a count."""
     try:
         values = [float(v) for v in value] if isinstance(value, (list, tuple)) and len(value) == 4 else None
     except (TypeError, ValueError):
         return None
-    if values and all(0 <= v <= 1000 for v in values) and max(values) > 1.02:
-        return repair_box([v / 1000 for v in values])
-    return None
+    if not values or not all(0 <= v <= 1000 for v in values):
+        return None
+    if max(values) > 1.02:
+        values = [v / 1000 for v in values]
+    ymin, xmin, ymax, xmax = values
+    return repair_box([xmin, ymin, xmax, ymax])
 
 
 class PersonMatch(StrictModel):
@@ -767,8 +768,8 @@ class ReasoningQA:
                     instructions=('List every distinct visible person in this one frame (not people on screens, '
                                   'photos or reflections). Give each a label P1, P2, ..., an appearance phrase in '
                                   'the answer language with face, hair, build, glasses or head camera, and clothing, '
-                                  'image_ids=[the frame id], and box=[x1,y1,x2,y2] around the person as fractions 0 '
-                                  'to 1 of the image width and height.')), [evidence[anchor]])
+                                  'image_ids=[the frame id], and box = [ymin, xmin, ymax, xmax] around the whole '
+                                  'person on a 0-1000 scale.')), [evidence[anchor]])
                 listed = [(p, [anchor]) for p in base.people]
                 known = [dict(label=p.label, appearance=p.appearance) for p in base.people]
 
@@ -792,7 +793,8 @@ class ReasoningQA:
                                       'people are an automatic list that can miss someone or be wrong). For each '
                                       'person give an appearance phrase in the answer language and same_as = the '
                                       'label of the listed person it is, or "new" when it is none of them, and '
-                                      'box=[x1,y1,x2,y2] around that person in the second image (fractions 0 to 1). '
+                                      'box = [ymin, xmin, ymax, xmax] around that whole person in the second image '
+                                      'on a 0-1000 scale. '
                                       + match_rule + 'Say "new" when you are not sure: a later step removes '
                                       'duplicates.')),
                         [evidence[anchor], evidence[frame]])

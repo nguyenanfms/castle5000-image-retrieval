@@ -1964,7 +1964,7 @@
       tile.className = "qa-object-tile";
       tile.title = `${item.label} · ${item.imageId}${item.text ? `\n${item.text}` : ""}`;
       if (item.box) {
-        tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0.2, label: `${item.label} trong ${item.imageId}` }));
+        tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0.12, outline: true, label: `${item.label} trong ${item.imageId}` }));
       } else {
         const img = document.createElement("img");
         img.src = "/thumbs/" + encodeURIComponent(item.imageId);
