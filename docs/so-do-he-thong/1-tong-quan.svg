@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1150 580" width="1150" height="580" role="img" aria-label="1 · Tổng quan hệ thống">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+<style>
+text { font-family: "Segoe UI", Roboto, Arial, sans-serif; }
+.h { font-size: 24px; font-weight: 700; fill: #0f172a; }
+.t { font-size: 14.5px; font-weight: 650; fill: #0f172a; }
+.s { font-size: 12px; fill: #475569; }
+.a { font-size: 12px; fill: #334155; font-weight: 600; }
+.b { font-size: 12px; font-weight: 650; }
+.l { font-size: 13px; font-weight: 700; }
+</style>
+</defs>
+<rect width="1150" height="580" fill="#ffffff"/>
+<text x="40" y="46" class="h">1 · Tổng quan hệ thống</text>
+<g transform="translate(40,150)">
+<rect width="150" height="118" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="15" r="8"/><path d="M8 42c2-10 9-14 16-14s14 4 16 14"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Người dùng</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">đội thi</text>
+</g>
+<g transform="translate(240,150)">
+<rect width="150" height="118" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="38" height="30" rx="4"/><line x1="5" y1="17" x2="43" y2="17"/><circle cx="10" cy="13" r="1.5"/><circle cx="15" cy="13" r="1.5"/><rect x="11" y="23" width="12" height="10" rx="1"/><line x1="27" y1="25" x2="37" y2="25"/><line x1="27" y1="31" x2="34" y2="31"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Trang web</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">/search-v2/</text>
+</g>
+<g transform="translate(440,150)">
+<rect width="150" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="7" width="30" height="10" rx="2"/><rect x="9" y="19" width="30" height="10" rx="2"/><rect x="9" y="31" width="30" height="10" rx="2"/><circle cx="15" cy="12" r="1.5"/><circle cx="15" cy="24" r="1.5"/><circle cx="15" cy="36" r="1.5"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Máy chủ</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">FastAPI</text>
+</g>
+<path d="M190,209 L238,209" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M390,209 L438,209" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(680,80)">
+<rect width="150" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="20" cy="20" r="11"/><line x1="28" y1="28" x2="41" y2="41"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Tìm ảnh</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">sơ đồ 2</text>
+</g>
+<g transform="translate(680,230)">
+<rect width="150" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9h34v22H22l-9 8v-8H7z"/><line x1="14" y1="17" x2="34" y2="17"/><line x1="14" y1="23" x2="28" y2="23"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Hỏi đáp</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">sơ đồ 3</text>
+</g>
+<g transform="translate(680,380)">
+<rect width="150" height="118" rx="14" fill="#ffedd5" stroke="#c2410c" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#c2410c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="6" x2="12" y2="43"/><path d="M12 8h24l-5 8 5 8H12"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Nộp bài</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">ảnh · đáp án QA</text>
+</g>
+<path d="M590,209 Q630,139 678,139" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M590,209 Q630,289 678,289" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M590,209 Q630,439 678,439" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(920,380)">
+<rect width="190" height="118" rx="14" fill="#ffedd5" stroke="#c2410c" stroke-width="1.5"/>
+<g transform="translate(73.0,10) scale(0.92)" fill="none" stroke="#c2410c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="6" x2="12" y2="43"/><path d="M12 8h24l-5 8 5 8H12"/></g>
+<text x="95.0" y="84" text-anchor="middle" class="t">DRES</text>
+<text x="95.0" y="103" text-anchor="middle" class="s">KIS tự chấm · QA chấm tay</text>
+</g>
+<path d="M830,439 L918,439" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(920,150)">
+<rect width="150" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M24 5c2 10 9 17 19 19-10 2-17 9-19 19-2-10-9-17-19-19 10-2 17-9 19-19z"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Gemini</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">đám mây</text>
+</g>
+<path d="M830,139 L918,195" fill="none" stroke="#7e22ce" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<path d="M830,289 L918,222" fill="none" stroke="#7e22ce" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<g transform="translate(440,380)">
+<rect width="150" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="24" cy="11" rx="15" ry="5"/><path d="M9 11v26c0 3 7 5 15 5s15-2 15-5V11"/><path d="M9 24c0 3 7 5 15 5s15-2 15-5"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Dữ liệu</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">ảnh · chỉ mục · metadata</text>
+</g>
+<path d="M515,378 L515,270" fill="none" stroke="#475569" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<g transform="translate(200,380)">
+<rect width="150" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="9" width="36" height="9" rx="4.5"/><rect x="6" y="21" width="27" height="9" rx="4.5"/><rect x="6" y="33" width="31" height="9" rx="4.5"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Metadata</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">Gemini, tạo trước 1 lần</text>
+</g>
+<path d="M350,439 L438,439" fill="none" stroke="#7e22ce" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<rect x="40" y="540" width="16" height="16" rx="4" fill="#eef2ff" stroke="#4f46e5"/><text x="62" y="553" class="s" text-anchor="start">Người dùng / giao diện</text>
+<rect x="256" y="540" width="16" height="16" rx="4" fill="#e0f2fe" stroke="#0369a1"/><text x="278" y="553" class="s" text-anchor="start">Mô hình trên máy</text>
+<rect x="424" y="540" width="16" height="16" rx="4" fill="#f3e8ff" stroke="#7e22ce"/><text x="446" y="553" class="s" text-anchor="start">Gemini</text>
+<rect x="512" y="540" width="16" height="16" rx="4" fill="#dcfce7" stroke="#15803d"/><text x="534" y="553" class="s" text-anchor="start">Kết quả</text>
+<rect x="608" y="540" width="16" height="16" rx="4" fill="#ffedd5" stroke="#c2410c"/><text x="630" y="553" class="s" text-anchor="start">DRES</text>
+</svg>

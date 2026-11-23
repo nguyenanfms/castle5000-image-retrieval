@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 690" width="1180" height="690" role="img" aria-label="3 · Hỏi đáp (QA)">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+<style>
+text { font-family: "Segoe UI", Roboto, Arial, sans-serif; }
+.h { font-size: 24px; font-weight: 700; fill: #0f172a; }
+.t { font-size: 14.5px; font-weight: 650; fill: #0f172a; }
+.s { font-size: 12px; fill: #475569; }
+.a { font-size: 12px; fill: #334155; font-weight: 600; }
+.b { font-size: 12px; font-weight: 650; }
+.l { font-size: 13px; font-weight: 700; }
+</style>
+</defs>
+<rect width="1180" height="690" fill="#ffffff"/>
+<text x="40" y="46" class="h">3 · Hỏi đáp (QA)</text>
+<g transform="translate(40,100)">
+<rect width="150" height="118" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9h34v22H22l-9 8v-8H7z"/><line x1="14" y1="17" x2="34" y2="17"/><line x1="14" y1="23" x2="28" y2="23"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Câu hỏi</text>
+</g>
+<g transform="translate(230,100)">
+<rect width="150" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="6" width="30" height="36" rx="3"/><path d="M15 16l3 3 5-6M15 28l3 3 5-6"/><line x1="27" y1="17" x2="34" y2="17"/><line x1="27" y1="29" x2="34" y2="29"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Lập kế hoạch</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">loại câu · câu tìm ảnh</text>
+</g>
+<g transform="translate(420,100)">
+<rect width="150" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="20" cy="20" r="11"/><line x1="28" y1="28" x2="41" y2="41"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">KIS tìm ảnh</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">dùng lại Tìm ảnh · 50 ảnh</text>
+</g>
+<path d="M190,159 L228,159" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M380,159 L418,159" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(365.8,74)"><rect width="208.4" height="24" rx="12" fill="#fff" stroke="#7e22ce" stroke-width="1.3"/><text x="104.2" y="16" text-anchor="middle" class="b" fill="#7e22ce">xếp theo metadata (chỉ chữ)</text></g>
+<rect x="610" y="70" width="330" height="300" rx="18" fill="#e0f2fe" fill-opacity="0.35" stroke="#0369a1" stroke-dasharray="5 6" stroke-width="1.2"/><text x="626" y="92" class="l" fill="#0369a1">Đọc ảnh theo đợt (2 ảnh song song)</text>
+<g transform="translate(630,105)">
+<rect width="140" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(48.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="38" height="30" rx="3"/><rect x="15" y="14" width="13" height="21" stroke-width="3"/><circle cx="21.5" cy="18" r="2.5"/></g>
+<text x="70.0" y="84" text-anchor="middle" class="t">DINO dò</text>
+<text x="70.0" y="103" text-anchor="middle" class="s">khoanh đối tượng</text>
+</g>
+<g transform="translate(780,105)">
+<rect width="140" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(48.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M24 5c2 10 9 17 19 19-10 2-17 9-19 19-2-10-9-17-19-19 10-2 17-9 19-19z"/></g>
+<text x="70.0" y="84" text-anchor="middle" class="t">Gemini đọc</text>
+<text x="70.0" y="103" text-anchor="middle" class="s">ảnh + ghi chú metadata</text>
+</g>
+<path d="M570,159 L628,159" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M770,150 L778,150" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(775,300)"><path d="M0,-42 L70,0 L0,42 L-70,0 Z" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/><text x="0" y="-3" text-anchor="middle" class="t">Đủ bằng</text><text x="0" y="15" text-anchor="middle" class="t">chứng?</text></g>
+<path d="M850,223 L800,260" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M705,300 Q660,285 690,225" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="650" y="300" text-anchor="middle" class="a">chưa</text>
+<g transform="translate(975,240)">
+<rect width="180" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(68.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="24" r="17"/><path d="M15 24l6 6 12-13"/></g>
+<text x="90.0" y="84" text-anchor="middle" class="t">Chọn cảnh</text>
+<text x="90.0" y="103" text-anchor="middle" class="s">so ảnh khớp · tổng hợp</text>
+</g>
+<path d="M845,300 L973,300" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/><text x="909.0" y="292.0" text-anchor="middle" class="a">đủ → dừng sớm</text>
+<g transform="translate(975,430)">
+<rect width="180" height="118" rx="14" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+<g transform="translate(68.0,10) scale(0.92)" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9h34v22H22l-9 8v-8H7z"/><path d="M16 20l5 5 10-10"/></g>
+<text x="90.0" y="84" text-anchor="middle" class="t">Trả lời</text>
+<text x="90.0" y="103" text-anchor="middle" class="s">đáp án ngắn · đối tượng</text>
+</g>
+<path d="M1065,358 L1065,428" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="40" y="410" width="880" height="180" rx="18" fill="#dcfce7" fill-opacity="0.35" stroke="#15803d" stroke-dasharray="5 6" stroke-width="1.2"/><text x="56" y="432" class="l" fill="#15803d">Câu đếm người khác nhau trong cả buổi (chạy nền, lưu kết quả)</text>
+<g transform="translate(60,445)">
+<rect width="190" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(73.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="9" width="36" height="9" rx="4.5"/><rect x="6" y="21" width="27" height="9" rx="4.5"/><rect x="6" y="33" width="31" height="9" rx="4.5"/></g>
+<text x="95.0" y="84" text-anchor="middle" class="t">Chọn khung</text>
+<text x="95.0" y="103" text-anchor="middle" class="s">metadata: khung đông + khung rõ</text>
+</g>
+<g transform="translate(275,445)">
+<rect width="190" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(73.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="14" cy="18" r="6"/><circle cx="34" cy="18" r="6"/><circle cx="24" cy="33" r="6"/><path d="M14 24v4M34 24v4" stroke-dasharray="2 2"/></g>
+<text x="95.0" y="84" text-anchor="middle" class="t">Gemini đối chiếu</text>
+<text x="95.0" y="103" text-anchor="middle" class="s">từng khung với khung mốc</text>
+</g>
+<g transform="translate(490,445)">
+<rect width="190" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(73.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="7" width="28" height="20" rx="2"/><rect x="9" y="13" width="28" height="20" rx="2"/><rect x="5" y="19" width="28" height="20" rx="2"/><path d="M9 35l7-7 5 5 4-4 6 6"/></g>
+<text x="95.0" y="84" text-anchor="middle" class="t">re-ID + thuộc tính</text>
+<text x="95.0" y="103" text-anchor="middle" class="s">xét trùng, chạy trên máy</text>
+</g>
+<g transform="translate(705,445)">
+<rect width="190" height="118" rx="14" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+<g transform="translate(73.0,10) scale(0.92)" fill="none" stroke="#4f46e5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="38" height="30" rx="3"/><rect x="10" y="15" width="12" height="18" stroke-dasharray="3 2"/><rect x="26" y="20" width="12" height="9" stroke-dasharray="3 2"/></g>
+<text x="95.0" y="84" text-anchor="middle" class="t">Gộp / nghi trùng</text>
+<text x="95.0" y="103" text-anchor="middle" class="s">hiện trên ô đối tượng</text>
+</g>
+<path d="M250,504 L273,504" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M465,504 L488,504" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M680,504 L703,504" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M895,504 L973,489" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M345,218 L345,392 L28,392 L28,504 L58,504" fill="none" stroke="#15803d" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<g transform="translate(252.0,600)"><rect width="446.0" height="24" rx="12" fill="#fff" stroke="#475569" stroke-width="1.3"/><text x="223.0" y="16" text-anchor="middle" class="b" fill="#475569">Đếm đông nhất cùng lúc: đọc 16 khung đông nhất theo metadata</text></g>
+<rect x="40" y="650" width="16" height="16" rx="4" fill="#eef2ff" stroke="#4f46e5"/><text x="62" y="663" class="s" text-anchor="start">Người dùng / giao diện</text>
+<rect x="256" y="650" width="16" height="16" rx="4" fill="#e0f2fe" stroke="#0369a1"/><text x="278" y="663" class="s" text-anchor="start">Mô hình trên máy</text>
+<rect x="424" y="650" width="16" height="16" rx="4" fill="#f3e8ff" stroke="#7e22ce"/><text x="446" y="663" class="s" text-anchor="start">Gemini</text>
+<rect x="512" y="650" width="16" height="16" rx="4" fill="#dcfce7" stroke="#15803d"/><text x="534" y="663" class="s" text-anchor="start">Kết quả</text>
+<rect x="608" y="650" width="16" height="16" rx="4" fill="#ffedd5" stroke="#c2410c"/><text x="630" y="663" class="s" text-anchor="start">DRES</text>
+</svg>

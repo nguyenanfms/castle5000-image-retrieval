@@ -44,6 +44,7 @@ output/
 # Local research and development artifacts.
 /docs/*
 !/docs/QA_EVIDENCE_FLOW.md
+!/docs/so-do-he-thong/
 /experiments/
 /notebooks/
 /backend/tests/*

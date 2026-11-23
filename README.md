@@ -2,7 +2,7 @@
 
 Ứng dụng tìm ảnh và hỏi đáp trên 5.000 ảnh Castle5000. SigLIP 2 lấy ảnh ứng viên, cộng thêm điểm khớp chữ với metadata từng ảnh (mô tả người, quần áo, đồ vật, trạng thái do Gemini viết sẵn một lần); chỉ mục vùng SigLIP 2 đối chiếu các đối tượng đã chọn và trả về khung trên ảnh gốc. Khi có khóa Gemini, hệ thống kiểm tra lại các ảnh đầu, chỉ ra bằng chứng cho từng yêu cầu, và trả lời câu hỏi về ảnh. Giao diện chạy tại `/search-v2/`.
 
-Sơ đồ hoạt động: mở `docs/so-do-he-thong/index.html` nếu bạn có thư mục này trên máy.
+Sơ đồ hoạt động: mở `docs/so-do-he-thong/index.html` (vẽ lại bằng `python docs/so-do-he-thong/ve_so_do.py`).
 
 ## 1. Chuẩn bị
 

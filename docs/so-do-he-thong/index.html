@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sơ đồ hoạt động · Castle Search</title>
+<style>
+  body { margin: 0; background: #f8fafc; font-family: "Segoe UI", Roboto, Arial, sans-serif; color: #0f172a; }
+  main { max-width: 1200px; margin: 0 auto; padding: 32px 20px 60px; }
+  h1 { margin: 0 0 6px; font-size: 28px; }
+  p { margin: 0 0 24px; color: #475569; }
+  nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  nav a { padding: 6px 12px; border-radius: 999px; background: #fff; border: 1px solid #cbd5e1; color: #0f172a; text-decoration: none; font-size: 14px; }
+  figure { margin: 0 0 28px; background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; }
+  figure img { display: block; width: 100%; height: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Sơ đồ hoạt động</h1>
+  <p>Castle Search · tìm ảnh và hỏi đáp trên 5.000 ảnh camera bếp</p>
+  <nav>
+    <a href="#tong-quan">1 · Tổng quan</a>
+    <a href="#tim-anh">2 · Tìm ảnh</a>
+    <a href="#hoi-dap">3 · Hỏi đáp</a>
+    <a href="#du-phong">4 · Dự phòng</a>
+  </nav>
+  <figure id="tong-quan"><img src="1-tong-quan.svg" alt="Tổng quan: người dùng, trang web, máy chủ, ba chức năng, Gemini, DRES, metadata tạo trước" /></figure>
+  <figure id="tim-anh"><img src="2-tim-anh.svg" alt="Luồng tìm ảnh: hiểu câu, SigLIP 2 kèm metadata, vùng SigLIP 2, lọc, Gemini kiểm, phóng to, gắn nhãn, nộp" /></figure>
+  <figure id="hoi-dap"><img src="3-hoi-dap.svg" alt="Luồng hỏi đáp: lập kế hoạch, KIS tìm ảnh, DINO và Gemini đọc theo đợt, dừng sớm, chọn cảnh, trả lời; nhánh đếm người: chọn khung, Gemini đối chiếu, re-ID và thuộc tính xét trùng" /></figure>
+  <figure id="du-phong"><img src="4-du-phong.svg" alt="Dự phòng: xoay vòng key khi hết quota, giữ kết quả khi Gemini lỗi, danh sách người chạy nền, các giới hạn" /></figure>
+</main>
+</body>
+</html>

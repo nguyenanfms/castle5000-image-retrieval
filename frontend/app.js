@@ -1937,7 +1937,7 @@
     for (const ev of evidence.values()) {
       const regions = (ev.regions || []).filter(region => Array.isArray(region.box));
       if (regions.length) {
-        for (const region of regions) items.push({ imageId: ev.image_id, box: region.box, label: region.label, text: ev.caption || "", ev });
+        for (const region of regions) items.push({ imageId: ev.image_id, box: region.box, label: region.label, text: region.note || "", ev });
       } else {
         items.push({ imageId: ev.image_id, box: null, label: ev.image_id.replace(/\.jpg$/i, ""), text: ev.caption || ev.observation || "", ev });
       }

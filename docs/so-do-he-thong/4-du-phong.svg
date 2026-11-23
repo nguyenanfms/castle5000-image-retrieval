@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 690" width="1100" height="690" role="img" aria-label="4 · Dự phòng và giới hạn">
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+<style>
+text { font-family: "Segoe UI", Roboto, Arial, sans-serif; }
+.h { font-size: 24px; font-weight: 700; fill: #0f172a; }
+.t { font-size: 14.5px; font-weight: 650; fill: #0f172a; }
+.s { font-size: 12px; fill: #475569; }
+.a { font-size: 12px; fill: #334155; font-weight: 600; }
+.b { font-size: 12px; font-weight: 650; }
+.l { font-size: 13px; font-weight: 700; }
+</style>
+</defs>
+<rect width="1100" height="690" fill="#ffffff"/>
+<text x="40" y="46" class="h">4 · Dự phòng và giới hạn</text>
+<rect x="25" y="75" width="1050" height="190" rx="18" fill="#fef9c3" fill-opacity="0.35" stroke="#a16207" stroke-dasharray="5 6" stroke-width="1.2"/><text x="41" y="97" class="l" fill="#a16207">Hết quota / quá tải</text>
+<g transform="translate(50,110)">
+<rect width="150" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="15" cy="24" r="8"/><line x1="23" y1="24" x2="42" y2="24"/><line x1="36" y1="24" x2="36" y2="31"/><line x1="41" y1="24" x2="41" y2="29"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Key chính</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">QA_API_KEY</text>
+</g>
+<g transform="translate(330,110)">
+<rect width="150" height="118" rx="14" fill="#fef9c3" stroke="#a16207" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#a16207" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M24 6l19 34H5z"/><line x1="24" y1="18" x2="24" y2="29"/><circle cx="24" cy="34" r="1.5"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">429 / 503</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">hết quota · quá tải</text>
+</g>
+<g transform="translate(610,110)">
+<rect width="150" height="118" rx="14" fill="#f3e8ff" stroke="#7e22ce" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#7e22ce" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="17" r="6"/><line x1="19" y1="17" x2="34" y2="17"/><line x1="30" y1="17" x2="30" y2="22"/><circle cx="17" cy="33" r="6"/><line x1="23" y1="33" x2="40" y2="33"/><line x1="36" y1="33" x2="36" y2="38"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Key dự phòng</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">BACKUP, BACKUP1…9</text>
+</g>
+<g transform="translate(890,110)">
+<rect width="150" height="118" rx="14" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="24" r="17"/><path d="M15 24l6 6 12-13"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Gọi lại</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">cùng model, key kế tiếp</text>
+</g>
+<path d="M200,169 L328,169" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M480,169 L608,169" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M760,169 L888,169" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(264.4,236)"><rect width="561.2" height="24" rx="12" fill="#fff" stroke="#a16207" stroke-width="1.3"/><text x="280.6" y="16" text-anchor="middle" class="b" fill="#a16207">xoay vòng key · giới hạn phút: nghỉ theo Google · hết quota ngày: nghỉ 1 giờ</text></g>
+<rect x="25" y="315" width="1050" height="190" rx="18" fill="#fef9c3" fill-opacity="0.35" stroke="#a16207" stroke-dasharray="5 6" stroke-width="1.2"/><text x="41" y="337" class="l" fill="#a16207">Gemini lỗi giữa chừng</text>
+<g transform="translate(50,350)">
+<rect width="150" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="13" y="7" width="28" height="20" rx="2"/><rect x="9" y="13" width="28" height="20" rx="2"/><rect x="5" y="19" width="28" height="20" rx="2"/><path d="M9 35l7-7 5 5 4-4 6 6"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Đã đọc N ảnh</text>
+</g>
+<g transform="translate(330,350)">
+<rect width="150" height="118" rx="14" fill="#fef9c3" stroke="#a16207" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#a16207" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M24 6l19 34H5z"/><line x1="24" y1="18" x2="24" y2="29"/><circle cx="24" cy="34" r="1.5"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Lỗi lượt sau</text>
+</g>
+<g transform="translate(610,350)">
+<rect width="150" height="118" rx="14" fill="#e0f2fe" stroke="#0369a1" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#0369a1" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="34" height="34" rx="3"/><rect x="14" y="7" width="18" height="11"/><rect x="13" y="25" width="22" height="12" rx="1"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Giữ kết quả</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">không bỏ ảnh đã đọc</text>
+</g>
+<g transform="translate(890,350)">
+<rect width="150" height="118" rx="14" fill="#dcfce7" stroke="#15803d" stroke-width="1.5"/>
+<g transform="translate(53.0,10) scale(0.92)" fill="none" stroke="#15803d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9h34v22H22l-9 8v-8H7z"/><path d="M16 20l5 5 10-10"/></g>
+<text x="75.0" y="84" text-anchor="middle" class="t">Trả lời</text>
+<text x="75.0" y="103" text-anchor="middle" class="s">+ ghi chú giới hạn</text>
+</g>
+<path d="M200,409 L328,409" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M480,409 L608,409" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M760,409 L888,409" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<g transform="translate(50,540)">
+<rect width="200" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(78.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="24" cy="24" r="17"/><path d="M24 13v11l7 5"/></g>
+<text x="100.0" y="84" text-anchor="middle" class="t">180 giây</text>
+<text x="100.0" y="103" text-anchor="middle" class="s">giới hạn mỗi câu QA</text>
+</g>
+<g transform="translate(290,540)">
+<rect width="200" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(78.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="14" cy="18" r="6"/><circle cx="34" cy="18" r="6"/><circle cx="24" cy="33" r="6"/><path d="M14 24v4M34 24v4" stroke-dasharray="2 2"/></g>
+<text x="100.0" y="84" text-anchor="middle" class="t">2 câu QA</text>
+<text x="100.0" y="103" text-anchor="middle" class="s">chạy cùng lúc</text>
+</g>
+<g transform="translate(530,540)">
+<rect width="200" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(78.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="38" height="30" rx="3"/><rect x="15" y="14" width="13" height="21" stroke-width="3"/><circle cx="21.5" cy="18" r="2.5"/></g>
+<text x="100.0" y="84" text-anchor="middle" class="t">DINO</text>
+<text x="100.0" y="103" text-anchor="middle" class="s">chỉ dùng cho QA</text>
+</g>
+<g transform="translate(770,540)">
+<rect width="230" height="118" rx="14" fill="#f1f5f9" stroke="#475569" stroke-width="1.5"/>
+<g transform="translate(93.0,10) scale(0.92)" fill="none" stroke="#475569" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="14" cy="18" r="6"/><circle cx="34" cy="18" r="6"/><circle cx="24" cy="33" r="6"/><path d="M14 24v4M34 24v4" stroke-dasharray="2 2"/></g>
+<text x="115.0" y="84" text-anchor="middle" class="t">Danh sách người</text>
+<text x="115.0" y="103" text-anchor="middle" class="s">chạy nền ≤ 15 phút, lưu lại</text>
+</g>
+</svg>
