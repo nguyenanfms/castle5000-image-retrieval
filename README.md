@@ -148,6 +148,8 @@ Danh mục này cần được rà thủ công trước khi sử dụng. Khởi 
 | `QA_METADATA_RERANK` | true | Câu hỏi về một cảnh lấy 50 ứng viên, xếp lại theo metadata rồi mới đọc ảnh |
 | `QA_USE_KIS_SEARCH` | true | QA tìm cảnh bằng chính bộ tìm ảnh (hiểu câu, tìm theo vùng có điều kiện và metadata, xếp lại bằng metadata) rồi mới đọc ảnh để đếm hoặc trả lời |
 | `QA_KIS_VERIFY` | false | Chạy thêm bước Gemini kiểm ảnh và phóng to của tìm ảnh bên trong QA (chậm hơn, QA vốn tự đọc ảnh) |
+| `QA_PEOPLE_ROSTER` | true | Câu "bao nhiêu người khác nhau tham gia": lấy khung đông người nhất làm mốc, so từng khung khác với mốc rồi gộp người mới; khung được chọn từ metadata toàn bộ ảnh |
+| `QA_ROSTER_FRAMES` | 24 | Số khung dùng cho phép điểm danh trên (mỗi khung thêm một lượt gọi chạy song song) |
 | `DETECTION_THREADS` | 0 | Số luồng CPU cho Grounding DINO; 0 là số nhân thật, tối đa 8 |
 
 ## Dữ liệu đi kèm
