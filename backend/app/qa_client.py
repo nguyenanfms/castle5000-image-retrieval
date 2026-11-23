@@ -405,6 +405,7 @@ class GeminiQAClient(BaseQAClient):
         evidence: list[EvidenceInput],
         deadline: float,
         response_schema: dict[str, Any] | None = None,
+        thinking: str | None = None,
     ) -> dict[str, Any]:
         if not self.is_ready():
             raise QAUnavailableError("Chưa cấu hình QA_API_KEY hoặc QA_MODEL cho Gemini")
@@ -433,6 +434,8 @@ class GeminiQAClient(BaseQAClient):
                 "responseMimeType": "application/json",
                 # Enforced by Gemini when given: required fields are always present.
                 **({"responseSchema": response_schema} if response_schema else {}),
+                # Short text-only tasks (ranking candidates) do not need long reasoning.
+                **({"thinkingConfig": {"thinkingLevel": thinking}} if thinking else {}),
             },
         }
 

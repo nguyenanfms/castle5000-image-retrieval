@@ -36,6 +36,10 @@ INDEX_FILES = {
     "regions/manifest.json", "regions/regions.json", "regions/text_encoder.onnx",
     "regions/text_parity.json", "regions/tokenizer_bpe.txt.gz",
 }
+# Grounding DINO counts people for QA. The app never downloads weights during a question, so the launcher
+# fetches this pinned snapshot once (about 660 MB) into the Hugging Face cache.
+DINO_REPO = "IDEA-Research/grounding-dino-tiny"
+DINO_REVISION = "a2bb814dd30d776dcf7e30523b00659f4f141c71"
 MEDIA_PATH = re.compile(r"(?:images|thumbs)/[0-9]+_[0-9]+\.jpg")
 
 
@@ -58,7 +62,8 @@ def prepare_data():
         required = (*archives, WEIGHTS)
     for artifact in required:
         if not lfs_ready(artifact):
-            raise ValueError(f"Missing Git LFS data for {artifact.name}. Run: git lfs pull")
+            raise ValueError(f"Missing Git LFS data for {artifact.name}. Run: git lfs pull "
+                             '--include="runtime/castle5000-media.zip,runtime/castle5000-siglip2.zip"')
     print(f"Release: {profile}", flush=True)
 
     DATA.mkdir(exist_ok=True)
@@ -112,6 +117,21 @@ def prepare_data():
             (DATA / directory / image).is_file() for directory in ("images", "thumbs")
         ):
             raise ValueError(f"Missing media for {image}")
+
+
+def ensure_detector(env):
+    """Point DETECTION_MODEL_DIR at a local Grounding DINO snapshot, downloading it on the first start."""
+    configured = env.get("DETECTION_MODEL_DIR")
+    if configured and (ROOT / configured if not Path(configured).is_absolute() else Path(configured)).is_dir():
+        return
+    try:
+        from huggingface_hub import snapshot_download
+        print("Checking Grounding DINO (first start downloads about 660 MB)...", flush=True)
+        path = snapshot_download(DINO_REPO, revision=DINO_REVISION,
+                                 cache_dir=str(Path(env["HF_HOME"]) / "hub"))
+        env["DETECTION_MODEL_DIR"] = path
+    except Exception as error:  # QA still answers; only person counts lose detector boxes.
+        print(f"Grounding DINO unavailable ({error}); QA counts will rely on Gemini boxes only.", flush=True)
 
 
 def port_available(port):
@@ -183,6 +203,7 @@ def run(args):
             REGION_INDEX_DIR=str(DATA / "regions"), SEARCH_REGION_THRESHOLD="0.21761782467365265",
             QA_DISTINCT_SIMILARITY_THRESHOLD="0.76", IMAGE_METADATA_DIR=str(DATA / "image-metadata-none"),
         )
+    ensure_detector(env)
     port_available(args.port)
     mock = None
     web = None

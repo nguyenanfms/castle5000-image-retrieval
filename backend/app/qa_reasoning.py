@@ -1078,13 +1078,13 @@ class ReasoningQA:
                                   list(dict.fromkeys(x for i in range(100 if metadata_rerank_on else 20)
                                                      for rank in ranked for x in rank[i:i+1])))
                     if metadata_rerank_on and not distinct_people and candidates:
-                        # One frame per event (up to 80 events) so the text pass compares moments, not
+                        # One frame per event (up to 60 events) so the text pass compares moments, not
                         # near-identical frames; the other frames of a chosen event stay available.
                         events = []
                         for x in candidates:
                             if not any(same_event(x, y) for y in events):
                                 events.append(x)
-                            if len(events) >= 80:
+                            if len(events) >= 60:
                                 break
                         candidates = events + [x for x in candidates if x not in set(events)][:20]
                         # One text call over the candidates' metadata puts the frames that fit the whole
@@ -1096,7 +1096,7 @@ class ReasoningQA:
                             self.stage(owner, cid, 'ranking', rid)
                             rerank_cache[rerank_key] = (await rerank(
                                 self.service.client, self.service.search_engine.image_metadata, description,
-                                candidates, keep=8, timeout_s=min(12.0, max(1.0, deadline - time.monotonic() - 30))))[0]
+                                candidates, keep=8, timeout_s=min(10.0, max(1.0, deadline - time.monotonic() - 30))))[0]
                         candidates = rerank_cache[rerank_key]
                     searched.update(candidates)
                     if plan.question_type == 'temporal':

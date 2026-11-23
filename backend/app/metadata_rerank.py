@@ -33,7 +33,7 @@ def _prompt(description, frames, keep):
     )
 
 
-async def rerank(client, store, description: str, image_ids: list[str], keep: int, timeout_s: float = 12.0):
+async def rerank(client, store, description: str, image_ids: list[str], keep: int, timeout_s: float = 10.0):
     """image_ids reordered: Gemini's picks first (best first), then the rest in their original order.
     Returns (ids, picked) where picked is the list Gemini chose ([] when skipped or failed)."""
     if client is None or store is None or not description.strip() or len(image_ids) <= 1:
@@ -52,7 +52,8 @@ async def rerank(client, store, description: str, image_ids: list[str], keep: in
     prompt = _prompt(description, frames, keep)
     try:
         try:
-            raw = await client.structured(prompt, [], time.monotonic() + timeout_s, response_schema=RERANK_SCHEMA)
+            raw = await client.structured(prompt, [], time.monotonic() + timeout_s, response_schema=RERANK_SCHEMA,
+                                          thinking="MINIMAL")
         except TypeError:
             # Clients without response_schema support (e.g. the OpenAI-compatible one).
             raw = await client.structured(prompt, [], time.monotonic() + timeout_s)

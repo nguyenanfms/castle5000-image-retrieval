@@ -40,27 +40,25 @@ git lfs ls-files --size
 
 ## 3. Cài và khởi động
 
+Một lệnh: tự tạo `.venv`, cài thư viện (lần đầu), tạo `.env` từ mẫu nếu chưa có, giải nén dữ liệu rồi chạy.
+
 **Windows (PowerShell)**
 
 ```powershell
-py -3.13 --version
-py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe tools/start_local.py
+powershell -ExecutionPolicy Bypass -File .\start.ps1
 ```
-
-Nếu Windows nhận lệnh `python` nhưng thiếu lệnh `py`, kiểm tra `python --version` rồi dùng `python -m venv .venv` khi đó là Python 3.13.
 
 **macOS hoặc Linux**
 
 ```sh
-python3.13 --version
-python3.13 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python tools/start_local.py
+sh start.sh
 ```
 
-Lần đầu chương trình giải nén dữ liệu vào `runtime-data/`, tải mô hình SigLIP 2 rồi nạp chỉ mục và metadata (lần đầu có thể mất 10–30 phút tùy mạng; các lần sau khoảng 1–2 phút). Giữ terminal mở và đợi dòng `Open http://127.0.0.1:8000/search-v2/`. Mở [trang tìm ảnh](http://127.0.0.1:8000/search-v2/) và đăng nhập bằng tên **student**, mật khẩu **student**. Bấm Ctrl+C trong terminal để dừng web và DRES demo. Những lần mở lại, chạy lại lệnh `tools/start_local.py` bằng Python trong `.venv`.
+Lần đầu mất khoảng 15–40 phút tùy mạng: cài thư viện (torch…), giải nén dữ liệu vào `runtime-data/`, tải SigLIP 2 (khoảng 4,3 GB) và Grounding DINO (khoảng 660 MB) vào `.cache/huggingface`. Các lần sau khoảng 1–2 phút. Giữ terminal mở và đợi dòng `Open http://127.0.0.1:8000/search-v2/`, rồi mở [trang tìm ảnh](http://127.0.0.1:8000/search-v2/), chọn **Demo** và đăng nhập **student** / **student**. Bấm Ctrl+C để dừng.
+
+Tìm ảnh chạy ngay không cần khóa. Để có hỏi đáp (QA), Gemini phân tích câu và Gemini kiểm ảnh, mở `.env` và điền `QA_API_KEY` (cùng `SEARCH_PLAN_API_KEY`, có thể dùng chung khóa), rồi chạy lại lệnh trên. Khóa lấy miễn phí tại [Google AI Studio](https://aistudio.google.com/apikey).
+
+Cài tay (nếu không dùng script): tạo `.venv` bằng Python 3.13, `pip install -r requirements.txt`, rồi chạy `python tools/start_local.py` bằng Python trong `.venv`.
 
 Bạn có thể mở [trang trạng thái](http://127.0.0.1:8000/health) để kiểm tra web đã nạp đủ ảnh và chỉ mục vùng.
 
