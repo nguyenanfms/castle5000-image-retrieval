@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     qa_metadata_rerank: bool = True
     # QA finds described scenes with the image-search pipeline (planner, region search, verifier).
     qa_use_kis_search: bool = True
+    # Also run image search's image checks and close-ups inside QA (slower; QA reads the frames itself).
+    qa_kis_verify: bool = False
     # Image-reading calls run at the same time within one QA round (1 = one after another).
     qa_parallel_reads: int = Field(default=2, ge=1, le=4)
     search_plan_api_key: str = ""

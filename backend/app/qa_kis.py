@@ -27,9 +27,12 @@ class KisResult:
 
 
 class KisFinder:
-    def __init__(self, planner, engine, verifier, k=50, verify_images=4):
+    def __init__(self, planner, engine, verifier, k=50, verify_images=4, verify=True):
         self.planner, self.engine, self.verifier = planner, engine, verifier
         self.k, self.verify_images = k, verify_images
+        # verify=False: QA reads the frames itself, so only the verifier's text-only metadata ranking is used
+        # (one quick call) instead of its image checks and close-ups.
+        self.verify = verify
 
     async def find(self, description: str, language: str = "vi") -> KisResult:
         started = time.perf_counter()
@@ -42,7 +45,12 @@ class KisFinder:
         rows, *_ = await self.engine.search_demo(query, self.k, details, "clip_region", conditions)
         ids = [row["id"] for row in rows]
         confirmed, rejected, partial = set(), set(), set()
-        if self.verifier is not None and ids and self.verifier.ready():
+        if self.verifier is not None and ids and not self.verify and hasattr(self.verifier, "metadata_order"):
+            try:
+                ids, _ = await self.verifier.metadata_order(query, details, ids, max(self.verify_images * 2, 8))
+            except Exception as exc:
+                log.warning("qa_kis_rank_failed error=%s", getattr(exc, "message", None) or type(exc).__name__)
+        elif self.verifier is not None and ids and self.verifier.ready():
             try:
                 checked = await self.verifier.verify(query, details, list(conditions), ids, language,
                                                      limit=self.verify_images)

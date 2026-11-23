@@ -146,6 +146,8 @@ Danh mục này cần được rà thủ công trước khi sử dụng. Khởi 
 | `SEARCH_ONE_PER_EVENT` | true | Mỗi sự kiện (các khung cùng giờ cách nhau ≤ `SEARCH_EVENT_WINDOW_S` giây, mặc định 14) chỉ hiện khung tốt nhất; khung còn lại xem ở dải **Khung lân cận** |
 | `SEARCH_METADATA_RERANK` | true | Trước khi Gemini nhìn 4 ảnh đầu, một lượt gọi chỉ bằng chữ xếp lại tối đa 50 ứng viên theo metadata |
 | `QA_METADATA_RERANK` | true | Câu hỏi về một cảnh lấy 50 ứng viên, xếp lại theo metadata rồi mới đọc ảnh |
+| `QA_USE_KIS_SEARCH` | true | QA tìm cảnh bằng chính bộ tìm ảnh (hiểu câu, tìm theo vùng có điều kiện và metadata, xếp lại bằng metadata) rồi mới đọc ảnh để đếm hoặc trả lời |
+| `QA_KIS_VERIFY` | false | Chạy thêm bước Gemini kiểm ảnh và phóng to của tìm ảnh bên trong QA (chậm hơn, QA vốn tự đọc ảnh) |
 | `DETECTION_THREADS` | 0 | Số luồng CPU cho Grounding DINO; 0 là số nhân thật, tối đa 8 |
 
 ## Dữ liệu đi kèm

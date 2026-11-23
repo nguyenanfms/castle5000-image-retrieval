@@ -121,7 +121,8 @@ async def lifespan(app: FastAPI):
         # QA uses the same scene search as image search (see qa_kis.py).
         app.state.qa_service.kis = KisFinder(app.state.search_planner, app.state.search_engine,
                                              app.state.search_verifier,
-                                             verify_images=settings.search_verify_images)
+                                             verify_images=settings.search_verify_images,
+                                             verify=settings.qa_kis_verify)
     app.state.verify_limiter = RateLimiter(settings.rate_limit_per_min)
     app.state.task_cache = _TaskCache()
     app.state.ready = True
