@@ -569,3 +569,32 @@ def test_repair_box_fixes_only_lossless_format_slips():
     row = repair_observation_regions(raw)['observations'][0]
     assert row['regions'] == [{'label': 'R1', 'box': [.1, .1, .3, .9]}]
     assert row['count_visibility'] == 'partial'
+
+
+def test_metadata_ordered_maximum_reads_crowded_frames_and_answers(tmp_path, monkeypatch):
+    """With image metadata, a maximum reads the most crowded frames first and is answered from them
+    (verifying only frames that were read: unread frames have no evidence to re-check)."""
+    from app.image_metadata import ImageMetadata
+    reasoner, service, ids = make_reasoner(tmp_path, monkeypatch, 26, 128)
+    crowd = {'17.jpg': 3, '05.jpg': 2}
+    records = {x: ImageMetadata.model_validate({'caption': 'kitchen', 'people_count_estimate': crowd.get(x, 1),
+                                                'people': [{'description': 'person'}] * crowd.get(x, 1)})
+               for x in ids}
+    service.search_engine.image_metadata = SimpleNamespace(get=records.get)
+    original = service.client.structured
+
+    async def structured(prompt, images, deadline):
+        result = await original(prompt, images, deadline)
+        if 'observations' in result:
+            for item in result['observations']:
+                n = crowd.get(item['image_id'], 1)
+                item['regions'] = [{'label': f'P{i}', 'box': [.1 + .2 * i, .1, .25 + .2 * i, .9]} for i in range(n)]
+        return result
+    service.client.structured = structured
+    req = QARequest(question='Which image has the most people?', answer_language='en')
+    versions = QAVersions(model='test', prompt='test', corpus='test', region=None)
+    response = run_inline(reasoner.answer(req, 'user', 'r1', time.monotonic()+30, versions))
+    observed = [image_id for stage, batch in service.client.calls if stage == 'observing' for image_id in batch]
+    assert observed[:2] == ['17.jpg', '05.jpg'] and len(set(observed)) <= 16
+    assert response.status == 'answered' and response.short_answer == '3'
+    assert '17.jpg' in response.answer

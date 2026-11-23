@@ -1428,7 +1428,9 @@ class ReasoningQA:
                     supported = True
                     conflicts = False
                     extra_queries = []
-                    verify_ids = list(scope_ids) if plan.operation == 'count_max' or corpus_aggregate else source_ids
+                    verify_ids = ([o.image_id for o in observations] if metadata_ordered_max
+                                  # a metadata-ordered maximum read only the most crowded frames
+                                  else list(scope_ids) if plan.operation == 'count_max' or corpus_aggregate else source_ids)
                     for offset in range(0, len(verify_ids), 4):
                         ids = verify_ids[offset:offset+4]
                         try:
