@@ -40,6 +40,7 @@ from .schemas import QAClaim, QAEvidenceItem, QARegion, QAResponse, SearchCondit
 from .search_conditions import DETECTION_SCORE, canonical_label, distinct_detections, same_detection
 from .metadata_people import brief_metadata, coverage_frames
 from .metadata_rerank import rerank
+from .qa_evidence import is_valid_normalized_box
 from .understanding import QA_RULES, retrieval_conditions, valid_conditions
 
 log = logging.getLogger('retrieval.qa.reasoning')
@@ -340,11 +341,32 @@ class RosterPerson(StrictModel):
     label: str = Field(min_length=1, max_length=30)
     appearance: str = Field(default='', max_length=400)
     image_ids: list[str] = Field(min_length=1, max_length=24)
+    box: list[float] | None = None   # [x1, y1, x2, y2] (0..1) around the person in image_ids[0]
+
+    @field_validator('box', mode='before')
+    @classmethod
+    def lenient_box(cls, value):
+        return loose_box(value)
+
+
+def loose_box(value):
+    """[x1, y1, x2, y2] as floats when the model wrote numbers (or numeric strings); None otherwise."""
+    try:
+        box = [float(v) for v in value] if isinstance(value, (list, tuple)) and len(value) == 4 else None
+    except (TypeError, ValueError):
+        return None
+    return box
 
 
 class PersonMatch(StrictModel):
     appearance: str = Field(default='', max_length=400)
     same_as: str = Field(default='new', max_length=30)   # a listed label such as 'P3', or 'new'
+    box: list[float] | None = None   # [x1, y1, x2, y2] (0..1) around the person in the second image
+
+    @field_validator('box', mode='before')
+    @classmethod
+    def lenient_box(cls, value):
+        return loose_box(value)
 
 
 class FrameMatches(StrictModel):
@@ -704,14 +726,21 @@ class ReasoningQA:
                     instructions=('List every distinct visible person in this one frame (not people on screens, '
                                   'photos or reflections). Give each a label P1, P2, ..., an appearance phrase in '
                                   'the answer language with face, hair, build, glasses or head camera, and clothing, '
-                                  'and image_ids=[the frame id].')), [evidence[anchor]])
+                                  'image_ids=[the frame id], and box=[x1,y1,x2,y2] around the person as fractions 0 '
+                                  'to 1 of the image width and height.')), [evidence[anchor]])
                 listed = [(p, [anchor]) for p in base.people]
                 known = [dict(label=p.label, appearance=p.appearance) for p in base.people]
 
                 # 2. Every other frame next to the anchor: who here is not one of the listed people?
                 labels = {p.label.strip().casefold() for p in base.people}
 
+                gate = asyncio.Semaphore(4)  # a burst of 20+ calls trips per-minute limits on every key
+
                 async def newcomers(frame):
+                    async with gate:
+                        return await compare_with_anchor(frame)
+
+                async def compare_with_anchor(frame):
                     meta = store.get(frame)
                     checklist = [p.description for p in meta.people] if meta is not None else []
                     found = await invoke('rostering', FrameMatches, dict(
@@ -721,11 +750,13 @@ class ReasoningQA:
                                       f'person visible in the second image ({frame}) one by one (the noted '
                                       'people are an automatic list that can miss someone or be wrong). For each '
                                       'person give an appearance phrase in the answer language and same_as = the '
-                                      'label of the listed person it is, or "new" when it is none of them. '
+                                      'label of the listed person it is, or "new" when it is none of them, and '
+                                      'box=[x1,y1,x2,y2] around that person in the second image (fractions 0 to 1). '
                                       + match_rule + 'Say "new" when you are not sure: a later step removes '
                                       'duplicates.')),
                         [evidence[anchor], evidence[frame]])
-                    return [(RosterPerson(label='new', appearance=p.appearance or 'person', image_ids=[frame]), frame)
+                    return [(RosterPerson(label='new', appearance=p.appearance or 'person', image_ids=[frame],
+                                          box=p.box), frame)
                             for p in found.people if p.same_as.strip().casefold() not in labels]
 
                 try:
@@ -741,14 +772,15 @@ class ReasoningQA:
                     merged = await invoke('rostering', Roster, dict(
                         question=plan.question, language=req.answer_language, frames=[anchor] + shown,
                         listed_people=known,
-                        candidates=[dict(id=f'C{i + 1}', frame=frame, appearance=p.appearance)
+                        candidates=[dict(id=f'C{i + 1}', frame=frame, appearance=p.appearance, box=p.box)
                                     for i, (p, frame) in enumerate(candidates) if frame in shown],
                         instructions=(f'The first image ({anchor}) shows the listed people. Each candidate is a '
                                       'person seen in the given later frame. Drop every candidate who is one of '
                                       'the listed people, and group candidates who are the same person seen in '
                                       'several frames. ' + match_rule + 'Return one entry per remaining distinct '
-                                      'person (not the listed ones): a label, an appearance phrase, and image_ids '
-                                      '= the later frames where that person appears.')),
+                                      'person (not the listed ones): a label, an appearance phrase, image_ids '
+                                      '= the later frames where that person appears, and box = the box of that '
+                                      'person in image_ids[0] (copy it from the matching candidate).')),
                         [evidence[anchor]] + [evidence[f] for f in shown])
                     listed += [(p, p.image_ids) for p in merged.people]
             except Exception as exc:  # the older per-crop estimate still runs
@@ -765,8 +797,15 @@ class ReasoningQA:
                 return None
             claims = [QAClaim(text=f'{p.label}: {p.appearance}'.strip(': '), evidence_ids=ids[:4])
                       for p, ids in people]
+            entries = []
+            for number, (p, ids) in enumerate(people, 1):
+                box = p.box if is_valid_normalized_box(p.box) and (p.image_ids or [None])[0] == ids[0] else None
+                entries.append(dict(label=f'P{number}', appearance=p.appearance, image_id=ids[0],
+                                    image_ids=ids, box=box))
+                if box is not None:
+                    output_regions.setdefault(ids[0], []).append(QARegion(label=f'P{number}', box=box))
             log.info('qa_roster request_id=%s frames=%d people=%d crowded=%d', rid, len(frames), len(people), most)
-            return len(people), claims, frames, most
+            return len(people), claims, frames, most, entries
 
         async def choose_scene(contenders):
             """The frame that shows the described moment, chosen by comparing up to 4 frames at once."""
@@ -1782,7 +1821,7 @@ class ReasoningQA:
             answer = (f'Có {count} người khác nhau xuất hiện trong {len(scope_ids)} ảnh đã kiểm duyệt.' if vi
                       else f'{count} distinct people appear across {len(scope_ids)} reviewed images.')
         if roster is not None:
-            count, claims, roster_frames, crowded = roster
+            count, claims, roster_frames, crowded, roster_entries = roster
             accepted = True
             partial = False
             short_answer = f'{count} người' if vi else str(count)
@@ -1923,6 +1962,7 @@ class ReasoningQA:
             operation=plan.operation if plan else None,
             status='answered' if accepted else ('ambiguous' if reason in {'missing_context', 'conflicting_evidence'} else 'insufficient_evidence'),
             answer=answer, short_answer=short_answer, message=None if accepted else message,
+            people_roster=roster[4] if roster is not None else [],
             identity_match_candidates=match_candidates,
             distinct_estimate=distinct_estimate,
             reason_code=None if accepted else reason, evidence=items, claims=claims, partial=partial,

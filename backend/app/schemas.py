@@ -330,6 +330,8 @@ class QAResponse(BaseModel):
     answer: str | None = None
     # Bare answer to submit to DRES ('4 người', 'màu nâu'); None when the answer has no short form.
     short_answer: str | None = None
+    # Distinct people found by the roster: label, appearance, the frame and box where each one is shown.
+    people_roster: list[dict] = Field(default_factory=list)
     reason_code: str | None = None
     message: str | None = None
     evidence: list[QAEvidenceItem] = Field(default_factory=list)

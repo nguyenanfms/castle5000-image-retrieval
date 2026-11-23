@@ -1924,12 +1924,75 @@
   }
 
   // The answer only carries one button; everything else is in the object browser.
+  // "Xem đối tượng" on every answer: each person or object the answer rests on, cropped from its frame
+  // (roster people, counted regions), or the evidence frames themselves when no box was drawn.
+  function answerObjects(resp) {
+    const evidence = new Map((resp.evidence || []).map(ev => [ev.image_id, ev]));
+    if (resp.people_roster?.length) {
+      return resp.people_roster.map(person => ({ imageId: person.image_id, box: person.box,
+        label: person.label, text: person.appearance,
+        ev: evidence.get(person.image_id) || { image_id: person.image_id, regions: person.box ? [{ label: person.label, box: person.box }] : [] } }));
+    }
+    const items = [];
+    for (const ev of evidence.values()) {
+      const regions = (ev.regions || []).filter(region => Array.isArray(region.box));
+      if (regions.length) {
+        for (const region of regions) items.push({ imageId: ev.image_id, box: region.box, label: region.label, text: ev.caption || "", ev });
+      } else {
+        items.push({ imageId: ev.image_id, box: null, label: ev.image_id.replace(/\.jpg$/i, ""), text: ev.caption || ev.observation || "", ev });
+      }
+    }
+    return items;
+  }
+
+  function createObjectsPanel(resp) {
+    const items = answerObjects(resp);
+    const panel = document.createElement("details");
+    panel.className = "qa-objects-panel";
+    const title = document.createElement("summary");
+    title.className = "qa-objects-btn";
+    const people = resp.people_roster?.length;
+    title.textContent = items.length
+      ? `Xem đối tượng · ${items.length} ${people ? "người" : items.some(item => item.box) ? "vùng" : "ảnh"}`
+      : "Xem đối tượng · chưa có đối tượng nào được xác định";
+    panel.appendChild(title);
+    const grid = document.createElement("div");
+    grid.className = "qa-objects-grid";
+    for (const item of items) {
+      const tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "qa-object-tile";
+      tile.title = `${item.label} · ${item.imageId}${item.text ? `\n${item.text}` : ""}`;
+      if (item.box) {
+        tile.appendChild(regionSvg(item.imageId, item.box, { pad: 0.2, label: `${item.label} trong ${item.imageId}` }));
+      } else {
+        const img = document.createElement("img");
+        img.src = "/thumbs/" + encodeURIComponent(item.imageId);
+        img.alt = item.imageId;
+        img.loading = "lazy";
+        tile.appendChild(img);
+      }
+      const caption = document.createElement("span");
+      const name = document.createElement("b");
+      name.textContent = item.label;
+      caption.append(name, item.text ? ` ${item.text}` : "");
+      tile.appendChild(caption);
+      tile.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openLightbox(item.imageId, null, item.ev);
+      });
+      grid.appendChild(tile);
+    }
+    panel.appendChild(grid);
+    return panel;
+  }
+
   function createDistinctGroupPanel(estimate, evidenceByImage = new Map()) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "qa-objects-btn";
     const count = objectViewerItems(estimate).length;
-    button.textContent = `${count} đối tượng · ${estimate.estimated_count} nhóm — Xem các đối tượng`;
+    button.textContent = `Xem đối tượng · ${count} vùng, ${estimate.estimated_count} nhóm`;
     button.addEventListener("click", () => openObjectViewer(estimate, null, evidenceByImage));
     return button;
   }
@@ -2621,6 +2684,12 @@
         sources.appendChild(more);
       }
       turn.footer.prepend(sources);
+    }
+    if (!estimate && (resp.status === "answered" || answerEvidence.length)) {
+      const objects = createObjectsPanel(resp);
+      const sources = turn.footer.querySelector(".qa-answer-sources");
+      if (sources) sources.after(objects);
+      else turn.footer.prepend(objects);
     }
     if (estimate) {
       const evidenceByImage = new Map((resp.evidence || []).map(ev => [ev.image_id, ev]));
