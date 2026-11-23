@@ -361,10 +361,11 @@ class GeminiQAClient(BaseQAClient):
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _generate(self, payload: dict[str, Any], deadline: float, key_index: int = 0) -> httpx.Response:
+    async def _generate(self, payload: dict[str, Any], deadline: float, key_index: int = 0,
+                        attempts: int = 3) -> httpx.Response:
         # Only retry explicit transient server responses. Never replay a timeout
         # or connection failure where generation may already have completed.
-        for attempt in range(3):
+        for attempt in range(attempts):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise QATimeoutError()
@@ -395,7 +396,7 @@ class GeminiQAClient(BaseQAClient):
                 upstream_status = None
             logger.info('gemini_response model=%s attempt=%d http=%d upstream_status=%s elapsed_ms=%d', self._model, attempt+1, resp.status_code, upstream_status, int((time.monotonic()-started)*1000))
 
-            if resp.status_code not in (500, 502, 503) or attempt == 2:
+            if resp.status_code not in (500, 502, 503) or attempt == attempts - 1:
                 return resp
             delay = (2 ** attempt) + random.uniform(0, 0.3)
             try:
@@ -457,8 +458,11 @@ class GeminiQAClient(BaseQAClient):
 
         order = self._key_order()
         for position, key_index in enumerate(order):
-            resp = await self._generate(payload, deadline, key_index)
-            if resp.status_code not in (429, 503):
+            # An overload (503) hits single requests at random: while other keys remain, move on at once
+            # instead of backing off on this key (3 tries with waits used up a 40 s budget on one key).
+            last = position == len(order) - 1
+            resp = await self._generate(payload, deadline, key_index, attempts=3 if last else 1)
+            if resp.status_code not in (429, 500, 502, 503):
                 break
             if resp.status_code == 429:
                 # Skip this key for as long as Google asks: the day's quota is long, a per-minute
