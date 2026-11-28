@@ -1,0 +1,8 @@
+# Torch/torchvision are supplied by your existing ml-gpu environment.
+# setup.ps1 preserves their installed versions with pip constraints.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx[socks]>=0.27,<1
+numpy>=1.26,<3
+Pillow>=10,<14
+open_clip_torch>=2.30,<4

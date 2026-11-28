@@ -1,0 +1,9 @@
+{"query":"a man in a gray sweater adjusting the head camera of a man in black","relevant":["day1_Kitchen_08_269"],"source_paths":["Batch1/08_269.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in a plaid shirt standing at the island while a woman in white and a man in blue face the stove","relevant":["day1_Kitchen_08_1887"],"source_paths":["Batch1/08_1887.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in a plaid shirt leaning over the kitchen sink beside a man in gray","relevant":["day1_Kitchen_09_1748"],"source_paths":["Batch1/09_1748.jpg"],"label_type":"internal_visual_partial"}
+{"query":"an empty kitchen with no people","relevant":["day1_Kitchen_10_1759","day1_Kitchen_14_1828","day1_Kitchen_19_1716"],"source_paths":["Batch3/10_1759.jpg","Batch1/14_1828.jpg","Batch3/19_1716.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in a plaid shirt holding a long wooden board up near the kitchen doorway","relevant":["day1_Kitchen_11_1736"],"source_paths":["Batch3/11_1736.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in a blue polo shirt and black apron chopping food on a red board at the kitchen island","relevant":["day1_Kitchen_12_1917"],"source_paths":["Batch2/12_1917.jpg"],"label_type":"internal_visual_partial"}
+{"query":"two men in blue and gray facing the stove while another man in a blue shirt walks toward them","relevant":["day1_Kitchen_13_1750"],"source_paths":["Batch3/13_1750.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in a gray shirt washing at the kitchen sink while a man in blue holds a pink checkered towel","relevant":["day1_Kitchen_15_1848"],"source_paths":["Batch2/15_1848.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a man in black holding a mug and a bowl of noodles beside a man in a white shirt at the kitchen island","relevant":["day1_Kitchen_17_1778"],"source_paths":["Batch2/17_1778.jpg"],"label_type":"internal_visual_partial"}

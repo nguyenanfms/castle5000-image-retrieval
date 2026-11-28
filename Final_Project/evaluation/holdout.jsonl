@@ -1,0 +1,3 @@
+{"query":"a man in a blue polo chopping food at the island while two men in gray stand at the stove","relevant":["day1_Kitchen_16_1968"],"source_paths":["Batch1/16_1968.jpg"],"label_type":"internal_visual_partial"}
+{"query":"a woman in a white top cooking at the stove behind a man in gray leaning over the sink","relevant":["day1_Kitchen_18_1776"],"source_paths":["Batch1/18_1776.jpg"],"label_type":"internal_visual_partial"}
+{"query":"people eating from bowls around the island while a man in a light gray sweater faces the stove","relevant":["day1_Kitchen_20_1894"],"source_paths":["Batch2/20_1894.jpg"],"label_type":"internal_visual_partial"}

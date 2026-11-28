@@ -1,0 +1,20 @@
+# Versioned copy of data/exclude.txt (data/ is intentionally gitignored).
+# Each image below was visually inspected on 20/11/2026, not inferred from frame order.
+# Restore if needed: Copy-Item evaluation/calibration_exclusions.txt data/exclude.txt
+Batch1/08_12.jpg
+Batch1/08_17.jpg
+Batch1/08_35.jpg
+Batch1/08_55.jpg
+Batch1/08_90.jpg
+Batch1/08_99.jpg
+Batch1/08_102.jpg
+Batch1/08_104.jpg
+Batch1/08_122.jpg
+Batch1/08_124.jpg
+Batch1/08_149.jpg
+Batch1/08_155.jpg
+Batch1/08_182.jpg
+Batch1/08_195.jpg
+Batch1/08_209.jpg
+Batch1/08_232.jpg
+Batch1/08_250.jpg

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Castle Local · DS314</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/">◈ <span>CASTLE<span class="light"> LOCAL</span></span></a><span class="course">DS314 / IMAGE RETRIEVAL</span><div class="header-right"><span class="dot" id="readyDot"></span><span id="readyLabel">Đang kiểm tra…</span><button id="refresh" class="small quiet">Làm mới</button></div></header>
+<div class="layout">
+<aside>
+ <div class="side-title">KHÔNG GIAN TÌM KIẾM</div>
+ <h2>Kho ảnh của nhóm</h2><p class="muted">Tìm khoảnh khắc từ một mô tả.</p>
+ <div class="stats"><div><strong id="imageCount">—</strong><span>ảnh đã lập chỉ mục</span></div><div><strong id="batchCount">—</strong><span>batch dữ liệu</span></div></div>
+ <label for="batch">Batch</label><select id="batch"><option value="">Tất cả Batch</option></select>
+ <label for="hour">Giờ trong tên ảnh</label><select id="hour"><option value="">Tất cả giờ</option></select>
+ <label for="limit">Số kết quả</label><select id="limit"><option>30</option><option selected>60</option><option>100</option><option>200</option></select>
+ <label for="searchMode">Phương pháp tìm ảnh</label>
+ <select id="searchMode" aria-describedby="metadataInfo">
+  <option value="clip">CLIP</option>
+  <option value="hybrid" disabled>CLIP + BM25</option>
+ </select>
+ <p id="metadataInfo" class="side-note"></p>
+ <div class="divider"></div>
+ <div class="side-title">NỘP KẾT QUẢ</div>
+ <div class="mode-label" id="connectionLabel">Chưa kết nối DRES</div>
+ <label for="mode">Chế độ</label><select id="mode"><option value="mock">Luyện local · không gửi DRES</option><option value="real">DRES thật · có tính điểm</option></select>
+ <form id="loginForm"><div id="credentials" hidden><label for="username">Tài khoản DRES</label><input id="username" autocomplete="username"><label for="password">Mật khẩu</label><input id="password" type="password" autocomplete="current-password"></div><button id="connect" class="secondary full" type="submit">Kết nối luyện local</button></form>
+ <div id="evaluationControls" hidden>
+  <label for="evaluation">Buổi thi / Evaluation</label>
+  <select id="evaluation"><option value="">Chọn buổi thi</option></select>
+  <button id="reloadEvaluations" class="quiet small full" type="button">Cập nhật danh sách</button>
+  <a id="viewer" target="_blank" rel="noreferrer" hidden>Mở DRES Viewer ↗</a>
+  <p id="taskLabel" class="muted" role="status"></p>
+  <button id="refreshTask" class="quiet small" type="button">Cập nhật task</button>
+  <section id="autoControls" hidden>
+   <button id="toggleAuto" class="secondary full" type="button" aria-pressed="false">Bật tự nộp</button>
+   <form id="autoForm" hidden>
+    <label for="autoHint">Đề và các gợi ý đã hiện</label>
+    <textarea id="autoHint" rows="3" maxlength="2000" placeholder="Dán đề và thêm gợi ý mới vào từng dòng" required></textarea>
+    <button id="runAuto" class="primary full" type="submit">Xử lý gợi ý</button>
+    <p id="autoStatus" class="side-note" role="status"></p>
+    <button id="autoEvidence" class="quiet small full" type="button" hidden>Xem ảnh bằng chứng</button>
+   </form>
+  </section>
+  <form id="qaForm" hidden>
+   <label for="qaAnswer">Đáp án QA</label>
+   <input id="qaAnswer" type="text" maxlength="2000" placeholder="Nhập đáp án ngắn" autocomplete="off" required>
+   <button id="submitQa" class="primary full" type="submit">Nộp đáp án</button>
+   <p id="qaHelp" class="side-note">Xem ảnh làm bằng chứng và nhập đáp án theo ngôn ngữ của đề.</p>
+   <p id="qaResult" class="muted" role="status"></p>
+  </form>
+  <button id="logout" class="quiet small full" type="button">Ngắt kết nối local</button>
+ </div>
+ <p class="side-note">Tìm kiếm dùng được khi chưa đăng nhập. KIS nộp ảnh. QA nộp đáp án chữ.</p>
+ <details><summary>Lịch sử nộp trong phiên</summary><div id="history" class="history">Chưa có lượt nộp.</div></details>
+ <footer><span id="modelLabel">OpenCLIP baseline</span><span id="deviceLabel">Local / tự chọn GPU</span></footer>
+</aside>
+<main>
+ <div class="eyebrow">TEXT → IMAGE</div><h1>Bạn đang tìm<br><span>khoảnh khắc nào?</span></h1>
+ <form id="searchForm" class="searchbox"><span class="search-icon">⌕</span><input id="query" placeholder="Ví dụ: a person adjusting another person's head camera" aria-label="Mô tả ảnh"><button id="searchButton" type="submit">Tìm ảnh <span>↗</span></button></form>
+ <p class="search-help">Bản cơ bản ưu tiên mô tả tiếng Anh ngắn. Enter để tìm · Bấm ảnh để xem lớn và các khung lân cận.</p>
+ <div class="chips"><button data-query="a person adjusting another person's head camera">Chỉnh camera trên đầu</button><button data-query="a person standing by the stove holding a towel">Đứng cạnh bếp, cầm khăn</button><button data-query="people preparing food around the kitchen island">Chuẩn bị đồ ăn trong bếp</button></div>
+ <div id="notice" class="notice" hidden></div>
+ <section class="results-header"><div><h3 id="resultsTitle">Duyệt kho ảnh</h3><span id="resultsInfo" class="muted">Đang tải…</span></div><button id="browse" class="quiet">Xóa truy vấn / duyệt ảnh</button></section>
+ <div id="results" class="grid"></div><div id="empty" class="empty" hidden><span>◈</span><h3>Chưa có kết quả</h3><p>Thử bỏ bộ lọc hoặc viết lại mô tả.</p></div>
+ <div class="footnote">Điểm hiển thị dùng để xếp hạng ảnh. CLIP + BM25 bổ sung điểm khớp mô tả.</div>
+</main></div>
+<dialog id="imageDialog"><div class="dialog-header"><span id="dialogTitle"></span><button id="closeDialog" class="quiet" aria-label="Đóng ảnh">✕</button></div><div class="image-view"><img id="largeImage" alt="Ảnh đang chọn"><section class="image-info"><div class="eyebrow">ẢNH ĐANG CHỌN</div><h2 id="selectedFilename"></h2><p id="selectedInfo" class="muted"></p><label>Mã nộp DRES</label><code id="selectedItem"></code><p id="selectedDescription" class="muted"></p><button id="similarButton" class="secondary full">Tìm ảnh tương tự</button><button id="submitButton" class="primary full">Nộp ảnh đang chọn</button><p id="submissionHelp" class="side-note"></p><div id="submissionResult" role="status"></div></section></div><div class="neighbors-heading"><strong>Khung hình lân cận</strong><span class="muted">Thứ tự số frame, cùng nguồn và giờ</span></div><div id="neighbors" class="neighbors"></div></dialog>
+<div id="toast" role="status" hidden></div>
+<script src="/app.js"></script>
+</body></html>

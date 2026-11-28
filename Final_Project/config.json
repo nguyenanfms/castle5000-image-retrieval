@@ -1,0 +1,16 @@
+{
+  "data_dir": "data",
+  "artifacts_dir": "artifacts",
+  "cache_dir": ".cache",
+  "metadata_csv": "",
+  "image_metadata_dir": "../runtime-data/image-metadata",
+  "partner_repo_dir": "..",
+  "metadata_weight": 0.5,
+  "model_name": "ViT-B-32",
+  "pretrained": "laion2b_s34b_b79k",
+  "device": "auto",
+  "batch_size": 16,
+  "dres_url": "https://dres.2hbread.com/api/v2",
+  "collection": "castle5000",
+  "item_prefix": "day1_Kitchen_"
+}

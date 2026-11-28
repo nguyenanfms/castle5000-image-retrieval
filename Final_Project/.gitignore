@@ -1,0 +1,10 @@
+data/
+artifacts/
+.cache/
+.runtime/
+.venv/
+__pycache__/
+*.pyc
+*.log
+.env
+.env.*

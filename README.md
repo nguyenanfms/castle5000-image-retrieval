@@ -4,6 +4,8 @@
 
 Sơ đồ hoạt động: mở `docs/so-do-he-thong/index.html` (vẽ lại bằng `python docs/so-do-he-thong/ve_so_do.py`).
 
+Nhánh `ph` có thêm **Castle Local** trong `Final_Project/`. Bản này dùng OpenCLIP, có tùy chọn CLIP + BM25, luyện KIS/QA với DRES mock và dùng Qwen hoặc Gemini để kiểm chứng ảnh. [Hướng dẫn chạy Castle Local](Final_Project/README_VI.md)
+
 ## 1. Chuẩn bị
 
 - Cài [Python 3.13 bản 64-bit](https://www.python.org/downloads/), [Git](https://git-scm.com/install/) và [Git LFS](https://git-lfs.com/).
